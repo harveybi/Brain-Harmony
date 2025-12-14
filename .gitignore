@@ -1,8 +1,8 @@
-brainharmonix.egg-info/
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+checkpoints/
+.vscode/
+__pycache__/
 *.pyc
-experiments/
-*.pth
-debug.sh
-data/
-std_output/
-qdel.sh
