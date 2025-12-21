@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 import torch
-from sklearn.metrics import f1_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 from timm.data import Mixup
 from timm.utils import accuracy
 
@@ -39,9 +39,15 @@ def train_one_epoch(
     if log_writer is not None:
         print("log_dir: {}".format(log_writer.log_dir))
 
-    for data_iter_step, (samples, targets, attn_mask) in enumerate(
+    for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
+        if len(batch) == 3:
+            samples, targets, attn_mask = batch
+        elif len(batch) == 4:
+            samples, targets, attn_mask, _ = batch
+        else:
+            raise ValueError("Expected batch with 3 or 4 elements.")
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(
                 optimizer, data_iter_step / len(data_loader) + epoch, args
@@ -108,10 +114,16 @@ def evaluate(data_loader, model, device, dataset_name):
     model.eval()
 
     batch_idx = 0
+    all_preds = []
+    all_targets = []
+
     for batch in metric_logger.log_every(data_loader, 10, header):
-        images = batch[0]
-        target = batch[1]
-        attn_mask = batch[2]
+        if len(batch) == 3:
+            images, target, attn_mask = batch
+        elif len(batch) == 4:
+            images, target, attn_mask, _ = batch
+        else:
+            raise ValueError("Expected batch with 3 or 4 elements.")
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
         attn_mask = attn_mask.to(device, non_blocking=True)
@@ -155,6 +167,9 @@ def evaluate(data_loader, model, device, dataset_name):
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
         metric_logger.meters["f1score"].update(f1score, n=batch_size)
+
+        all_preds.append(predict)
+        all_targets.append(target.detach().cpu().numpy())
     metric_logger.synchronize_between_processes()
     print(
         "* Acc@1 {top1.global_avg:.3f} f1score {f1.global_avg:.3f} loss {losses.global_avg:.3f}".format(
@@ -162,4 +177,14 @@ def evaluate(data_loader, model, device, dataset_name):
         )
     )
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    y_pred = np.concatenate(all_preds) if all_preds else np.array([])
+    y_true = np.concatenate(all_targets) if all_targets else np.array([])
+    bac = (
+        balanced_accuracy_score(y_true, y_pred) if y_true.size and y_pred.size else 0.0
+    )
+
+    print(f"* Balanced accuracy {bac:.3f}")
+
+    metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    metrics["bac"] = bac
+    return metrics

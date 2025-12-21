@@ -1,12 +1,14 @@
 #!/bin/bash
 
 # 检查参数
-if [ $# -ne 4 ]; then
-    echo "用法: $0 <模型大小> <num_latent_tokens> <数据集> <随机种子>"
+if [ $# -ne 6 ]; then
+    echo "用法: $0 <模型大小> <num_latent_tokens> <数据集> <随机种子> <数据根目录> <输出目录>"
     echo "模型大小: base, small, large"
     echo "数据集: 数据集名称"
     echo "随机种子: 用于数据分割的随机种子"
-    echo "例如: $0 base 128 dataset1 42"
+    echo "数据根目录: 例如 /p/project1/hai_1024/data"
+    echo "输出目录: 例如 /p/project1/hai_1024/Brain-Harmony/experiments"
+    echo "例如: $0 base 128 ADNI 42 /p/project1/hai_1024/data /p/project1/hai_1024/Brain-Harmony/experiments"
     exit 1
 fi
 
@@ -15,6 +17,8 @@ MODEL_SIZE=$1
 NUM_LATENT_TOKENS=$2
 DATASET_NAME=$3
 SPLIT_SEED=$4
+DATA_ROOT=$5
+OUTPUT_ROOT=$6
 
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
@@ -41,14 +45,16 @@ echo "模型大小: $MODEL_SIZE (${ms})"
 echo "潜在令牌数量: $NUM_LATENT_TOKENS"
 echo "数据集: $DATASET_NAME"
 echo "随机种子: $SPLIT_SEED"
+echo "数据根目录: $DATA_ROOT"
+echo "输出目录: $OUTPUT_ROOT"
 
 
 # 启动微调训练
-python modules/harmonizer/stage2_finetune/main_finetune.py \
+python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --batch_size 16 \
     --model vit_base_patch16 \
-    --output_dir experiments/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
-    --log_dir experiments/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
+    --output_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
+    --log_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
     --epochs 50 \
     --lr 5e-4 --layer_decay 0.65 \
     --weight_decay 0.05 --drop_path 0.1 \
@@ -56,4 +62,5 @@ python modules/harmonizer/stage2_finetune/main_finetune.py \
     --nb_classes 2 \
     --dataset_name ${DATASET_NAME} \
     --split_seed ${SPLIT_SEED} \
+    --data_path ${DATA_ROOT} \
     --finetune checkpoints/harmonizer/model.pth

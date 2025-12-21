@@ -5,6 +5,8 @@ import datetime
 import fcntl
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -12,10 +14,12 @@ import numpy as np
 import timm
 import torch
 import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.models.layers import trunc_normal_
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import balanced_accuracy_score
 
 import modules.harmonizer.stage2_finetune.models as models_enc_one_tok_reg
 import modules.harmonizer.util.lr_decay as lrd
@@ -25,6 +29,209 @@ from modules.harmonizer.stage2_finetune.engine_finetune import evaluate, train_o
 from modules.harmonizer.util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 assert timm.__version__ == "0.3.2"
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+from rep_scripts.utils import prepare_Brain_dataset
+
+
+ADNI_NUM_REGIONS = 400
+ADNI_TIME_TOKENS = 18
+ADNI_TOKEN_DIM = 768
+ADNI_PAD_TOKENS = 1200
+
+
+def adapt_adni_signal(
+    signal,
+    target_regions=ADNI_NUM_REGIONS,
+    target_time=ADNI_TIME_TOKENS,
+    token_dim=ADNI_TOKEN_DIM,
+    pad_tokens=ADNI_PAD_TOKENS,
+):
+    signal = torch.as_tensor(signal, dtype=torch.float32)
+    if signal.ndim == 1:
+        signal = signal.unsqueeze(0)
+    elif signal.ndim > 2:
+        signal = signal.squeeze()
+    if signal.ndim != 2:
+        raise ValueError(f"Expected 2D signal, got shape {tuple(signal.shape)}")
+
+    num_regions, seq_len = signal.shape
+    if num_regions < target_regions:
+        pad = torch.zeros((target_regions - num_regions, seq_len), dtype=signal.dtype)
+        signal = torch.cat([signal, pad], dim=0)
+    elif num_regions > target_regions:
+        signal = signal[:target_regions, :]
+
+    signal = signal.unsqueeze(0)
+    signal = F.interpolate(signal, size=target_time, mode="linear", align_corners=False)
+    signal = signal.squeeze(0)
+
+    tokens = signal.reshape(-1, 1)
+    tokens = tokens.repeat(1, token_dim)
+
+    attn_mask = torch.ones(target_regions * target_time, dtype=torch.int64)
+    if pad_tokens:
+        pad = torch.zeros((pad_tokens, token_dim), dtype=tokens.dtype)
+        tokens = torch.cat([tokens, pad], dim=0)
+
+    return tokens, attn_mask
+
+
+class AdniFinetuneDataset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset):
+        self.base_dataset = base_dataset
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        signal, target = self.base_dataset[idx]
+        tokens, attn_mask = adapt_adni_signal(signal)
+        target = int(torch.as_tensor(target).item())
+        sample_id = str(idx)
+        if hasattr(self.base_dataset, "keys"):
+            key_info = self.base_dataset.keys[idx]
+            sample_id = f"{key_info['dataset']}:{key_info['key']}"
+        return tokens, target, attn_mask, sample_id
+
+
+def collate_adni(batch):
+    tokens, targets, attn_masks, sample_ids = zip(*batch)
+    tokens = torch.stack(tokens, dim=0)
+    targets = torch.tensor(targets, dtype=torch.long)
+    attn_masks = torch.stack(attn_masks, dim=0)
+    return tokens, targets, attn_masks, list(sample_ids)
+
+
+def resolve_git_commit(repo_root):
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
+    except Exception:
+        git_commit = "unknown"
+    return git_commit
+
+
+@torch.no_grad()
+def collect_predictions(data_loader, model, device):
+    model.eval()
+    all_preds = []
+    all_targets = []
+    all_ids = []
+    all_probs = []
+
+    for batch in data_loader:
+        if len(batch) == 4:
+            samples, targets, attn_mask, sample_ids = batch
+        else:
+            raise ValueError("Expected batch with 4 elements for prediction collection.")
+
+        samples = samples.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        attn_mask = attn_mask.to(device, non_blocking=True)
+
+        with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+            outputs = model(samples, attn_mask)
+
+        probs = torch.softmax(outputs, dim=-1)
+        preds = torch.argmax(probs, dim=-1)
+        all_preds.append(preds.cpu().numpy())
+        all_targets.append(targets.cpu().numpy())
+        all_ids.extend(sample_ids)
+        all_probs.append(probs[:, 1].detach().cpu().numpy())
+
+    y_pred = np.concatenate(all_preds)
+    y_true = np.concatenate(all_targets)
+    prob = np.concatenate(all_probs)
+
+    return y_true, y_pred, prob, all_ids
+
+
+def write_run_artifact(
+    output_dir,
+    run_id,
+    split,
+    dataset_name,
+    seed,
+    metric_name,
+    metric_value,
+    predictions,
+    git_commit,
+):
+    payload = {
+        "dataset_name": dataset_name,
+        "seed": int(seed),
+        "split": split,
+        "metric_name": metric_name,
+        "metric_value": float(metric_value),
+        "predictions": predictions,
+        "git_commit": git_commit,
+    }
+    path = os.path.join(output_dir, f"run-{run_id}.{split}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def run_overfit_sanity(
+    model,
+    criterion,
+    data_loader,
+    optimizer,
+    device,
+    loss_scaler,
+    args,
+    tolerance,
+):
+    model.train()
+    batch = next(iter(data_loader))
+    samples, targets, attn_mask, _ = batch
+    samples = samples.to(device, non_blocking=True)
+    targets = targets.to(device, non_blocking=True)
+    attn_mask = attn_mask.to(device, non_blocking=True)
+
+    with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+        outputs = model(samples, attn_mask)
+        initial_loss = criterion(outputs, targets).item()
+
+    for _ in range(args.overfit_epochs):
+        train_one_epoch(
+            model,
+            criterion,
+            data_loader,
+            optimizer,
+            device,
+            args.start_epoch,
+            loss_scaler,
+            args.clip_grad,
+            None,
+            log_writer=None,
+            args=args,
+        )
+
+    with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+        outputs = model(samples, attn_mask)
+        final_loss = criterion(outputs, targets).item()
+
+    probs = torch.softmax(outputs, dim=-1)
+    preds = torch.argmax(probs, dim=-1).cpu().numpy()
+    targets_np = targets.cpu().numpy()
+    bac = balanced_accuracy_score(targets_np, preds)
+
+    print(
+        f"Overfit sanity: initial_loss={initial_loss:.6f} final_loss={final_loss:.6f} bac={bac:.4f}"
+    )
+    if not np.isfinite(bac):
+        raise RuntimeError("Overfit sanity failed: balanced accuracy is NaN/inf.")
+    if final_loss > (initial_loss - tolerance):
+        raise RuntimeError(
+            "Overfit sanity failed: loss did not decrease within tolerance."
+        )
 
 
 def get_args_parser():
@@ -251,6 +458,35 @@ def get_args_parser():
 
     parser.add_argument("--dataset_name", default="", type=str, help="dataset_name")
     parser.add_argument("--split_seed", default="0", type=str, help="dataset_name")
+    parser.add_argument(
+        "--dataset_init_only",
+        action="store_true",
+        help="Initialize dataset + print shapes, then exit",
+    )
+    parser.add_argument(
+        "--overfit_batches",
+        default=0,
+        type=int,
+        help="Number of batches to use for 1-batch overfit sanity mode (0 disables).",
+    )
+    parser.add_argument(
+        "--overfit_epochs",
+        default=3,
+        type=int,
+        help="Epochs to run in overfit sanity mode.",
+    )
+    parser.add_argument(
+        "--overfit_tolerance",
+        default=1e-4,
+        type=float,
+        help="Minimum loss decrease required for overfit sanity mode.",
+    )
+    parser.add_argument(
+        "--run_id",
+        default="",
+        type=str,
+        help="Optional run id for artifact files (default: timestamp).",
+    )
 
     return parser
 
@@ -269,21 +505,29 @@ def main(args):
 
     cudnn.benchmark = True
 
-    if args.dataset_name == "AbideI":
+    if args.dataset_name == "ADNI":
+        train_base, test_base, val_base = prepare_Brain_dataset(
+            args.data_path, "ADNI"
+        )
+        dataset_train = AdniFinetuneDataset(train_base)
+        dataset_val = AdniFinetuneDataset(val_base)
+        dataset_test = AdniFinetuneDataset(test_base)
+        collate_fn = collate_adni
+    elif args.dataset_name == "AbideI":
         root_dir = "experiments/stage0_embed/downstream_embed/AbideI"
         splits_file = f"/scratch/Projects/project_312_HelenZhou/ABIDE1_fMRI_T1/data_splits_seed{args.split_seed}.json"
-
-    dataset_train = GenerateEmbedDataset_downstream(
-        root_dir=root_dir, splits_file=splits_file, split="train"
-    )
-
-    dataset_test = GenerateEmbedDataset_downstream(
-        root_dir=root_dir, splits_file=splits_file, split="val"
-    )
-
-    dataset_val = GenerateEmbedDataset_downstream(
-        root_dir=root_dir, splits_file=splits_file, split="test"
-    )
+        dataset_train = GenerateEmbedDataset_downstream(
+            root_dir=root_dir, splits_file=splits_file, split="train"
+        )
+        dataset_test = GenerateEmbedDataset_downstream(
+            root_dir=root_dir, splits_file=splits_file, split="val"
+        )
+        dataset_val = GenerateEmbedDataset_downstream(
+            root_dir=root_dir, splits_file=splits_file, split="test"
+        )
+        collate_fn = None
+    else:
+        raise ValueError(f"Unsupported dataset_name: {args.dataset_name}")
 
     if True:
         num_tasks = misc.get_world_size()
@@ -329,6 +573,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=drop_last_train,
+        collate_fn=collate_fn,
     )
 
     data_loader_val = torch.utils.data.DataLoader(
@@ -338,6 +583,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False,
+        collate_fn=collate_fn,
     )
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -347,7 +593,23 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False,
+        collate_fn=collate_fn,
     )
+
+    if args.dataset_init_only:
+        print(f"Dataset root: {args.data_path}")
+        print(
+            f"Splits: train={len(dataset_train)} val={len(dataset_val)} test={len(dataset_test)}"
+        )
+        sample_batch = next(iter(data_loader_train))
+        if len(sample_batch) == 4:
+            samples, targets, attn_mask, _ = sample_batch
+        else:
+            samples, targets, attn_mask = sample_batch
+        print(
+            f"Batch shapes: samples={tuple(samples.shape)} targets={tuple(targets.shape)} attn_mask={tuple(attn_mask.shape)}"
+        )
+        return
 
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0.0 or args.cutmix_minmax is not None
@@ -461,9 +723,35 @@ def main(args):
         )
         exit(0)
 
+    if args.overfit_batches > 0:
+        subset_size = min(len(dataset_train), args.overfit_batches * args.batch_size)
+        subset_indices = list(range(subset_size))
+        subset = torch.utils.data.Subset(dataset_train, subset_indices)
+        data_loader_overfit = torch.utils.data.DataLoader(
+            subset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=False,
+            collate_fn=collate_fn,
+        )
+        run_overfit_sanity(
+            model,
+            criterion,
+            data_loader_overfit,
+            optimizer,
+            device,
+            loss_scaler,
+            args,
+            args.overfit_tolerance,
+        )
+        return
+
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_accuracy = 0.0
+    max_metric = -float("inf")
+    metric_key = "bac" if args.dataset_name == "ADNI" else "f1score"
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -483,16 +771,16 @@ def main(args):
 
         test_stats = evaluate(data_loader_val, model, device, args.dataset_name)
         print(
-            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}%"
+            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}"
         )
 
         test_test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
         print(
-            f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}%"
+            f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}"
         )
 
         if args.output_dir:
-            if test_stats["f1score"] >= max_accuracy:
+            if test_stats[metric_key] >= max_metric:
                 val_stats = test_stats
                 misc.save_model(
                     args=args,
@@ -513,13 +801,14 @@ def main(args):
                     epoch=epoch,
                     latest=True,
                 )
-        max_accuracy = max(max_accuracy, test_stats["f1score"])
-        print(f"Max accuracy: {max_accuracy:.2f}%")
+        max_metric = max(max_metric, test_stats[metric_key])
+        print(f"Max {metric_key}: {max_metric:.4f}")
 
         if log_writer is not None:
             log_writer.add_scalar("perf/test_acc1", test_stats["acc1"], epoch)
             log_writer.add_scalar("perf/test_f1score", test_stats["f1score"], epoch)
             log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
+            log_writer.add_scalar("perf/test_bac", test_stats["bac"], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
@@ -549,7 +838,7 @@ def main(args):
     )
     test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
     print(
-        f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%"
+        f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% bac={test_stats['bac']:.3f}"
     )
 
     header = [
@@ -557,11 +846,13 @@ def main(args):
         "val_loss",
         "val_acc1",
         "val_f1score",
+        "val_bac",
         "test_loss",
         "test_acc1",
         "test_f1score",
+        "test_bac",
     ]
-    csv_file = "output_dir/results.csv"
+    csv_file = os.path.join(args.output_dir, "results.csv")
     write_header = not os.path.exists(csv_file)
 
     row_name = f"{args.dataset_name}_split{args.split_seed}"
@@ -577,12 +868,57 @@ def main(args):
                 val_stats["loss"],
                 val_stats["acc1"],
                 val_stats["f1score"],
+                val_stats["bac"],
                 test_stats["loss"],
                 test_stats["acc1"],
                 test_stats["f1score"],
+                test_stats["bac"],
             ]
         )
         fcntl.flock(f, fcntl.LOCK_UN)
+
+    if args.output_dir and args.dataset_name == "ADNI":
+        run_id = args.run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        git_commit = resolve_git_commit(PROJECT_ROOT)
+
+        train_true, train_pred, train_prob, train_ids = collect_predictions(
+            data_loader_train, model, device
+        )
+        val_true, val_pred, val_prob, val_ids = collect_predictions(
+            data_loader_val, model, device
+        )
+        test_true, test_pred, test_prob, test_ids = collect_predictions(
+            data_loader_test, model, device
+        )
+
+        splits = [
+            ("train", train_true, train_pred, train_prob, train_ids),
+            ("val", val_true, val_pred, val_prob, val_ids),
+            ("test", test_true, test_pred, test_prob, test_ids),
+        ]
+
+        for split_name, y_true, y_pred, prob, ids in splits:
+            bac = balanced_accuracy_score(y_true, y_pred)
+            predictions = [
+                {
+                    "id": sample_id,
+                    "y_true": int(y_t),
+                    "y_pred": int(y_p),
+                    "prob": float(p),
+                }
+                for sample_id, y_t, y_p, p in zip(ids, y_true, y_pred, prob)
+            ]
+            write_run_artifact(
+                args.output_dir,
+                run_id,
+                split_name,
+                args.dataset_name,
+                args.seed,
+                "bac",
+                bac,
+                predictions,
+                git_commit,
+            )
 
 
 if __name__ == "__main__":
