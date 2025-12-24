@@ -89,7 +89,11 @@ class AdniFinetuneDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         signal, target = self.base_dataset[idx]
         tokens, attn_mask = adapt_adni_signal(signal)
-        target = int(torch.as_tensor(target).item())
+        target_tensor = torch.as_tensor(target)
+        if target_tensor.numel() > 1:
+            target = int(torch.argmax(target_tensor).item())
+        else:
+            target = int(target_tensor.item())
         sample_id = str(idx)
         if hasattr(self.base_dataset, "keys"):
             key_info = self.base_dataset.keys[idx]
