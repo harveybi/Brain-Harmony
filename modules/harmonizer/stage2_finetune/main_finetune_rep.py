@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pickle
+import lmdb
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
@@ -32,7 +34,6 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
-from rep_scripts.utils import prepare_Brain_dataset
 
 
 ADNI_NUM_REGIONS = 400
@@ -115,6 +116,83 @@ def resolve_git_commit(repo_root):
     except Exception:
         git_commit = "unknown"
     return git_commit
+
+
+class BrainSignalDatasetFallback(torch.utils.data.Dataset):
+    def __init__(self, root, split="train", dataset=None):
+        self.root = root
+        self.split = split
+        self.dataset = dataset
+        self.env = {}
+        self.keys = []
+
+        if dataset is None:
+            raise ValueError("dataset must be provided for BrainSignalDatasetFallback")
+
+        path = os.path.join(root, dataset, split, "BrainSignal.lmdb")
+        if os.path.isdir(os.path.join(root, dataset)):
+            self.env[dataset] = lmdb.open(
+                path, readonly=True, lock=False, readahead=False, meminit=False
+            )
+            with self.env[dataset].begin(write=False) as txn:
+                self.keys.extend(pickle.loads(txn.get("__keys__".encode("ascii"))))
+
+    def __len__(self):
+        return len(self.keys)
+
+    def __getitem__(self, idx):
+        dataset = self.keys[idx]["dataset"]
+        key = self.keys[idx]["key"]
+
+        with self.env[dataset].begin(write=False) as txn:
+            sample = pickle.loads(txn.get(key.encode("ascii")))
+            signal = sample["signal"]
+            target = sample["y"]
+            if "CamCAN" in dataset:
+                target = [target["age"][0]]
+            elif "LEMON" in dataset:
+                target = target[0]
+
+        mean = signal.mean(axis=-1, keepdims=True)
+        std = signal.std(axis=-1, keepdims=True)
+        signal = (signal - mean) / (std + 1e-8)
+
+        orig_num_region, orig_signal_length = signal.shape
+        signal_length = 200
+        if signal_length < orig_signal_length:
+            signal = signal[:, :signal_length]
+            orig_signal_length = signal_length
+
+        padding_size_l = (-orig_signal_length % 200 + 1) // 2
+        padding_size_r = (-orig_signal_length % 200) - padding_size_l
+        signal = np.pad(
+            signal,
+            pad_width=((0, 0), (padding_size_l, padding_size_r)),
+            mode="constant",
+            constant_values=0,
+        )
+
+        return torch.FloatTensor(signal), torch.FloatTensor(target)
+
+
+def prepare_Brain_dataset_fallback(root, dataset):
+    train_dataset = BrainSignalDatasetFallback(root, "train", dataset)
+    val_dataset = BrainSignalDatasetFallback(root, "val", dataset)
+    test_dataset = BrainSignalDatasetFallback(root, "test", dataset)
+    print(len(train_dataset), len(val_dataset), len(test_dataset))
+    return train_dataset, test_dataset, val_dataset
+
+
+def load_adni_datasets(data_root):
+    try:
+        from rep_scripts.utils import prepare_Brain_dataset
+    except Exception as exc:
+        print(
+            "Warning: rep_scripts.utils import failed; using fallback ADNI loader. "
+            f"Original error: {exc}"
+        )
+        return prepare_Brain_dataset_fallback(data_root, "ADNI")
+    return prepare_Brain_dataset(data_root, "ADNI")
 
 
 def load_training_deps():
@@ -539,9 +617,7 @@ def main(args):
     cudnn.benchmark = True
 
     if args.dataset_name == "ADNI":
-        train_base, test_base, val_base = prepare_Brain_dataset(
-            args.data_path, "ADNI"
-        )
+        train_base, test_base, val_base = load_adni_datasets(args.data_path)
         dataset_train = AdniFinetuneDataset(train_base)
         dataset_val = AdniFinetuneDataset(val_base)
         dataset_test = AdniFinetuneDataset(test_base)
