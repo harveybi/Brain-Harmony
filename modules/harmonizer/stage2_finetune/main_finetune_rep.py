@@ -11,24 +11,23 @@ import time
 from pathlib import Path
 
 import numpy as np
-import timm
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
-from timm.data.mixup import Mixup
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
-from timm.models.layers import trunc_normal_
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import balanced_accuracy_score
 
-import modules.harmonizer.stage2_finetune.models as models_enc_one_tok_reg
-import modules.harmonizer.util.lr_decay as lrd
 import modules.harmonizer.util.misc as misc
 from datasets.datasets import GenerateEmbedDataset_downstream
-from modules.harmonizer.stage2_finetune.engine_finetune import evaluate, train_one_epoch
 from modules.harmonizer.util.misc import NativeScalerWithGradNormCount as NativeScaler
 
-assert timm.__version__ == "0.3.2"
+try:
+    import timm as _timm
+except Exception as exc:
+    _timm = None
+    _timm_import_error = exc
+else:
+    _timm_import_error = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
@@ -118,6 +117,39 @@ def resolve_git_commit(repo_root):
     return git_commit
 
 
+def load_training_deps():
+    if _timm is None:
+        raise RuntimeError(
+            "timm import failed; fix timm/PyTorch compatibility before training. "
+            f"Original error: {_timm_import_error}"
+        )
+    if _timm.__version__ != "0.3.2":
+        raise RuntimeError(
+            f"Expected timm==0.3.2, found {_timm.__version__}. Update the env."
+        )
+    from timm.data.mixup import Mixup
+    from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+    from timm.models.layers import trunc_normal_
+
+    import modules.harmonizer.stage2_finetune.models as models_enc_one_tok_reg
+    import modules.harmonizer.util.lr_decay as lrd
+    from modules.harmonizer.stage2_finetune.engine_finetune import (
+        evaluate,
+        train_one_epoch,
+    )
+
+    return {
+        "Mixup": Mixup,
+        "LabelSmoothingCrossEntropy": LabelSmoothingCrossEntropy,
+        "SoftTargetCrossEntropy": SoftTargetCrossEntropy,
+        "trunc_normal_": trunc_normal_,
+        "models_enc_one_tok_reg": models_enc_one_tok_reg,
+        "lrd": lrd,
+        "evaluate": evaluate,
+        "train_one_epoch": train_one_epoch,
+    }
+
+
 @torch.no_grad()
 def collect_predictions(data_loader, model, device):
     model.eval()
@@ -187,6 +219,7 @@ def run_overfit_sanity(
     loss_scaler,
     args,
     tolerance,
+    train_one_epoch,
 ):
     model.train()
     batch = next(iter(data_loader))
@@ -611,6 +644,16 @@ def main(args):
         )
         return
 
+    deps = load_training_deps()
+    Mixup = deps["Mixup"]
+    LabelSmoothingCrossEntropy = deps["LabelSmoothingCrossEntropy"]
+    SoftTargetCrossEntropy = deps["SoftTargetCrossEntropy"]
+    trunc_normal_ = deps["trunc_normal_"]
+    models_enc_one_tok_reg = deps["models_enc_one_tok_reg"]
+    lrd = deps["lrd"]
+    evaluate = deps["evaluate"]
+    train_one_epoch = deps["train_one_epoch"]
+
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0.0 or args.cutmix_minmax is not None
     if mixup_active:
@@ -745,6 +788,7 @@ def main(args):
             loss_scaler,
             args,
             args.overfit_tolerance,
+            train_one_epoch,
         )
         return
 
