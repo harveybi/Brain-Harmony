@@ -205,9 +205,9 @@ def load_training_deps():
             "timm import failed; fix timm/PyTorch compatibility before training. "
             f"Original error: {_timm_import_error}"
         )
-    if _timm.__version__ != "0.3.2":
+    if _timm.__version__ != "0.9.12":
         raise RuntimeError(
-            f"Expected timm==0.3.2, found {_timm.__version__}. Update the env."
+            f"Expected timm==0.9.12, found {_timm.__version__}. Update the env."
         )
     from timm.data.mixup import Mixup
     from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
