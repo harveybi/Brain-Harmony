@@ -20,6 +20,7 @@ SPLIT_SEED=$4
 DATA_ROOT=$5
 OUTPUT_ROOT=$6
 NUM_WORKERS="${NUM_WORKERS:-10}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
@@ -49,11 +50,12 @@ echo "随机种子: $SPLIT_SEED"
 echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS"
+echo "batch size: $BATCH_SIZE"
 
 
 # 启动微调训练
 python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
-    --batch_size 16 \
+    --batch_size ${BATCH_SIZE} \
     --model vit_base_patch16 \
     --output_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
     --log_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
