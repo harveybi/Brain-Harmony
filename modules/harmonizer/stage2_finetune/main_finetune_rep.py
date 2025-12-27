@@ -877,6 +877,9 @@ def main(args):
     max_metric = -float("inf")
     metric_key = "bac" if args.dataset_name == "ADNI" else "f1score"
     for epoch in range(args.start_epoch, args.epochs):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        epoch_start = time.time()
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         train_stats = train_one_epoch(
@@ -891,6 +894,23 @@ def main(args):
             mixup_fn,
             log_writer=log_writer,
             args=args,
+        )
+        epoch_time = time.time() - epoch_start
+        step_time = train_stats.get("iter_time")
+        data_time = train_stats.get("data_time")
+        max_mem_mb = 0.0
+        if torch.cuda.is_available():
+            max_mem_mb = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+        print(
+            "Perf epoch={epoch} epoch_time_s={epoch_time:.2f} step_time_s={step_time:.4f} "
+            "data_time_s={data_time:.4f} max_mem_mb={max_mem:.0f} eff_batch_size={eff_bs}".format(
+                epoch=epoch,
+                epoch_time=epoch_time,
+                step_time=step_time or 0.0,
+                data_time=data_time or 0.0,
+                max_mem=max_mem_mb,
+                eff_bs=eff_batch_size,
+            )
         )
 
         test_stats = evaluate(data_loader_val, model, device, args.dataset_name)

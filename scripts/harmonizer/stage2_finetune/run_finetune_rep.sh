@@ -19,6 +19,7 @@ DATASET_NAME=$3
 SPLIT_SEED=$4
 DATA_ROOT=$5
 OUTPUT_ROOT=$6
+NUM_WORKERS="${NUM_WORKERS:-10}"
 
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
@@ -47,6 +48,7 @@ echo "数据集: $DATASET_NAME"
 echo "随机种子: $SPLIT_SEED"
 echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
+echo "数据加载 worker 数: $NUM_WORKERS"
 
 
 # 启动微调训练
@@ -63,4 +65,6 @@ python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --dataset_name ${DATASET_NAME} \
     --split_seed ${SPLIT_SEED} \
     --data_path ${DATA_ROOT} \
+    --num_workers ${NUM_WORKERS} \
+    --pin_mem \
     --finetune checkpoints/harmonizer/model.pth
