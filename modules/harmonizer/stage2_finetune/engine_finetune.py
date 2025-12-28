@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 import torch
-from sklearn.metrics import balanced_accuracy_score, f1_score
+from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, f1_score
 from timm.data import Mixup
 from timm.utils import accuracy
 
@@ -116,6 +116,7 @@ def evaluate(data_loader, model, device, dataset_name):
     batch_idx = 0
     all_preds = []
     all_targets = []
+    multiclass_datasets = {"SEEDV"}
 
     for batch in metric_logger.log_every(data_loader, 10, header):
         if len(batch) == 3:
@@ -157,12 +158,11 @@ def evaluate(data_loader, model, device, dataset_name):
 
         predict = np.argmax(output.detach().cpu().numpy(), axis=1)
 
-        if dataset_name == "PPMI":
-            f1score = f1_score(
-                target.detach().cpu().numpy(), predict, average="weighted"
-            )
+        target_np = target.detach().cpu().numpy()
+        if dataset_name in multiclass_datasets or dataset_name == "PPMI":
+            f1score = f1_score(target_np, predict, average="weighted")
         else:
-            f1score = f1_score(target.detach().cpu().numpy(), predict)
+            f1score = f1_score(target_np, predict)
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
@@ -183,8 +183,17 @@ def evaluate(data_loader, model, device, dataset_name):
         balanced_accuracy_score(y_true, y_pred) if y_true.size and y_pred.size else 0.0
     )
 
-    print(f"* Balanced accuracy {bac:.3f}")
+    kappa = None
+    if dataset_name in multiclass_datasets and y_true.size and y_pred.size:
+        kappa = cohen_kappa_score(y_true, y_pred)
+
+    if kappa is None:
+        print(f"* Balanced accuracy {bac:.3f}")
+    else:
+        print(f"* Balanced accuracy {bac:.3f} kappa {kappa:.3f}")
 
     metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     metrics["bac"] = bac
+    if kappa is not None:
+        metrics["kappa"] = kappa
     return metrics

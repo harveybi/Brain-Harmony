@@ -41,6 +41,40 @@ ADNI_TIME_TOKENS = 18
 ADNI_TOKEN_DIM = 768
 ADNI_PAD_TOKENS = 1200
 
+DATASET_CONFIG = {
+    "ADNI": {
+        "loader_name": "ADNI",
+        "task": "binary",
+        "nb_classes": 2,
+        "metric_key": "bac",
+    },
+    "ADHD200": {
+        "loader_name": "ADHD200",
+        "task": "binary",
+        "nb_classes": 2,
+        "metric_key": "bac",
+    },
+    "LEMON_fMRI": {
+        "loader_name": "LEMON_fMRI",
+        "task": "binary",
+        "nb_classes": 2,
+        "metric_key": "bac",
+    },
+    "SEEDV": {
+        "loader_name": "SEEDV",
+        "task": "multiclass",
+        "nb_classes": 5,
+        "metric_key": "kappa",
+    },
+}
+
+DEFAULT_ADAPT_CONFIG = {
+    "target_regions": ADNI_NUM_REGIONS,
+    "target_time": ADNI_TIME_TOKENS,
+    "token_dim": ADNI_TOKEN_DIM,
+    "pad_tokens": ADNI_PAD_TOKENS,
+}
+
 
 def adapt_adni_signal(
     signal,
@@ -79,16 +113,17 @@ def adapt_adni_signal(
     return tokens, attn_mask
 
 
-class AdniFinetuneDataset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset):
+class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset, adapt_config=None):
         self.base_dataset = base_dataset
+        self.adapt_config = adapt_config or DEFAULT_ADAPT_CONFIG
 
     def __len__(self):
         return len(self.base_dataset)
 
     def __getitem__(self, idx):
         signal, target = self.base_dataset[idx]
-        tokens, attn_mask = adapt_adni_signal(signal)
+        tokens, attn_mask = adapt_adni_signal(signal, **self.adapt_config)
         target_tensor = torch.as_tensor(target)
         if target_tensor.numel() > 1:
             target = int(torch.argmax(target_tensor).item())
@@ -101,7 +136,7 @@ class AdniFinetuneDataset(torch.utils.data.Dataset):
         return tokens, target, attn_mask, sample_id
 
 
-def collate_adni(batch):
+def collate_brain_signals(batch):
     tokens, targets, attn_masks, sample_ids = zip(*batch)
     tokens = torch.stack(tokens, dim=0)
     targets = torch.tensor(targets, dtype=torch.long)
@@ -187,16 +222,16 @@ def prepare_Brain_dataset_fallback(root, dataset):
     return train_dataset, test_dataset, val_dataset
 
 
-def load_adni_datasets(data_root):
+def load_brain_datasets(data_root, dataset_name):
     try:
         from rep_scripts.utils import prepare_Brain_dataset
     except Exception as exc:
         print(
-            "Warning: rep_scripts.utils import failed; using fallback ADNI loader. "
+            "Warning: rep_scripts.utils import failed; using fallback loader. "
             f"Original error: {exc}"
         )
-        return prepare_Brain_dataset_fallback(data_root, "ADNI")
-    return prepare_Brain_dataset(data_root, "ADNI")
+        return prepare_Brain_dataset_fallback(data_root, dataset_name)
+    return prepare_Brain_dataset(data_root, dataset_name)
 
 
 def load_training_deps():
@@ -619,13 +654,24 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
+    dataset_cfg = DATASET_CONFIG.get(args.dataset_name)
 
-    if args.dataset_name == "ADNI":
-        train_base, test_base, val_base = load_adni_datasets(args.data_path)
-        dataset_train = AdniFinetuneDataset(train_base)
-        dataset_val = AdniFinetuneDataset(val_base)
-        dataset_test = AdniFinetuneDataset(test_base)
-        collate_fn = collate_adni
+    if dataset_cfg is not None:
+        if args.nb_classes == 1000:
+            args.nb_classes = dataset_cfg["nb_classes"]
+        elif args.nb_classes != dataset_cfg["nb_classes"]:
+            print(
+                "Warning: nb_classes mismatch for {dataset}. Using nb_classes={nb}.".format(
+                    dataset=args.dataset_name, nb=args.nb_classes
+                )
+            )
+        train_base, test_base, val_base = load_brain_datasets(
+            args.data_path, dataset_cfg["loader_name"]
+        )
+        dataset_train = BrainSignalFinetuneDataset(train_base)
+        dataset_val = BrainSignalFinetuneDataset(val_base)
+        dataset_test = BrainSignalFinetuneDataset(test_base)
+        collate_fn = collate_brain_signals
     elif args.dataset_name == "AbideI":
         root_dir = "experiments/stage0_embed/downstream_embed/AbideI"
         splits_file = f"/scratch/Projects/project_312_HelenZhou/ABIDE1_fMRI_T1/data_splits_seed{args.split_seed}.json"
@@ -875,7 +921,9 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_metric = -float("inf")
-    metric_key = "bac" if args.dataset_name == "ADNI" else "f1score"
+    metric_key = (
+        dataset_cfg["metric_key"] if dataset_cfg is not None else "f1score"
+    )
     for epoch in range(args.start_epoch, args.epochs):
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -914,13 +962,17 @@ def main(args):
         )
 
         test_stats = evaluate(data_loader_val, model, device, args.dataset_name)
+        val_kappa = test_stats.get("kappa")
+        val_kappa_msg = f" kappa={val_kappa:.3f}" if val_kappa is not None else ""
         print(
-            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}"
+            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
         )
 
         test_test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
+        test_kappa = test_test_stats.get("kappa")
+        test_kappa_msg = f" kappa={test_kappa:.3f}" if test_kappa is not None else ""
         print(
-            f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}"
+            f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}{test_kappa_msg}"
         )
 
         if args.output_dir:
@@ -953,6 +1005,8 @@ def main(args):
             log_writer.add_scalar("perf/test_f1score", test_stats["f1score"], epoch)
             log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
             log_writer.add_scalar("perf/test_bac", test_stats["bac"], epoch)
+            if "kappa" in test_stats:
+                log_writer.add_scalar("perf/test_kappa", test_stats["kappa"], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},

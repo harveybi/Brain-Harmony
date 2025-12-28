@@ -21,6 +21,7 @@ DATA_ROOT=$5
 OUTPUT_ROOT=$6
 NUM_WORKERS="${NUM_WORKERS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
+NB_CLASSES=2
 
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
@@ -51,6 +52,19 @@ echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS"
 echo "batch size: $BATCH_SIZE"
+case $DATASET_NAME in
+    "SEEDV")
+        NB_CLASSES=5
+        ;;
+    "ADNI"|"ADHD200"|"LEMON_fMRI")
+        NB_CLASSES=2
+        ;;
+    *)
+        echo "警告: 未知数据集 '$DATASET_NAME'，默认使用 NB_CLASSES=2"
+        NB_CLASSES=2
+        ;;
+esac
+echo "分类类别数: $NB_CLASSES"
 
 
 # 启动微调训练
@@ -63,7 +77,7 @@ python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --lr 5e-4 --layer_decay 0.65 \
     --weight_decay 0.05 --drop_path 0.1 \
     --dist_eval \
-    --nb_classes 2 \
+    --nb_classes ${NB_CLASSES} \
     --dataset_name ${DATASET_NAME} \
     --split_seed ${SPLIT_SEED} \
     --data_path ${DATA_ROOT} \
