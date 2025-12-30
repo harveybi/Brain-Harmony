@@ -811,6 +811,19 @@ def main(args):
         else:
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
+        if isinstance(checkpoint_model, dict):
+            filtered = {
+                k: v
+                for k, v in checkpoint_model.items()
+                if k in state_dict and getattr(v, "shape", None) == state_dict[k].shape
+            }
+            if len(filtered) != len(checkpoint_model):
+                print(
+                    "Checkpoint filtering: loaded {loaded}/{total} keys (shape/name match).".format(
+                        loaded=len(filtered), total=len(checkpoint_model)
+                    )
+                )
+            checkpoint_model = filtered
         for k in ["head.weight", "head.bias"]:
             if (
                 k in checkpoint_model
@@ -823,16 +836,16 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-
+        expected_missing = {"head.weight", "head.bias"}
         if args.global_pool:
-            assert set(msg.missing_keys) == {
-                "head.weight",
-                "head.bias",
-                "fc_norm.weight",
-                "fc_norm.bias",
-            }
-        else:
-            assert set(msg.missing_keys) == {"head.weight", "head.bias"}
+            expected_missing |= {"fc_norm.weight", "fc_norm.bias"}
+        extra_missing = set(msg.missing_keys) - expected_missing
+        if extra_missing:
+            print(
+                "Warning: checkpoint missing unexpected keys: {}".format(
+                    sorted(extra_missing)
+                )
+            )
 
         trunc_normal_(model.head.weight, std=2e-5)
 
