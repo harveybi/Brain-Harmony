@@ -806,7 +806,10 @@ def main(args):
         checkpoint = torch.load(args.finetune, map_location="cpu", weights_only=False)
 
         print("Load pre-trained checkpoint from: %s" % args.finetune)
-        checkpoint_model = checkpoint["model"]
+        if isinstance(checkpoint, dict) and "model" in checkpoint:
+            checkpoint_model = checkpoint["model"]
+        else:
+            checkpoint_model = checkpoint
         state_dict = model.state_dict()
         for k in ["head.weight", "head.bias"]:
             if (
