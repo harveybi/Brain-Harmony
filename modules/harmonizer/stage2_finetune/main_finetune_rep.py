@@ -812,6 +812,16 @@ def main(args):
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
         if isinstance(checkpoint_model, dict):
+            if any(k.startswith("encoder.") for k in checkpoint_model):
+                mapped = {}
+                for k, v in checkpoint_model.items():
+                    if not k.startswith("encoder."):
+                        continue
+                    new_key = k[len("encoder.") :]
+                    if new_key.startswith("norm.") and args.global_pool:
+                        new_key = "fc_norm." + new_key[len("norm.") :]
+                    mapped[new_key] = v
+                checkpoint_model = mapped
             filtered = {
                 k: v
                 for k, v in checkpoint_model.items()
