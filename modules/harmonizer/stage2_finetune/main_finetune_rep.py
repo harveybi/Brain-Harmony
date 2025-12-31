@@ -226,6 +226,11 @@ def load_brain_datasets(data_root, dataset_name):
     try:
         from rep_scripts.utils import prepare_Brain_dataset
     except Exception as exc:
+        if dataset_name == "ADNI":
+            raise RuntimeError(
+                "ADNI contract requires rep_scripts.utils.prepare_Brain_dataset; "
+                "fix its import dependencies before running."
+            ) from exc
         print(
             "Warning: rep_scripts.utils import failed; using fallback loader. "
             f"Original error: {exc}"
