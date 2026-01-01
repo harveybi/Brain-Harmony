@@ -668,6 +668,11 @@ def get_args_parser():
         help="Initialize dataset + print shapes, then exit",
     )
     parser.add_argument(
+        "--shape_print_only",
+        action="store_true",
+        help="Print raw/adapted shapes + run one forward pass, then exit",
+    )
+    parser.add_argument(
         "--overfit_batches",
         default=0,
         type=int,
@@ -709,6 +714,7 @@ def main(args):
 
     cudnn.benchmark = True
     dataset_cfg = DATASET_CONFIG.get(args.dataset_name)
+    train_base = None
 
     if dataset_cfg is not None:
         if args.nb_classes == 1000:
@@ -745,6 +751,11 @@ def main(args):
         collate_fn = None
     else:
         raise ValueError(f"Unsupported dataset_name: {args.dataset_name}")
+
+    if args.dataset_init_only and args.shape_print_only:
+        raise ValueError(
+            "Use only one of --dataset_init_only or --shape_print_only."
+        )
 
     if True:
         num_tasks = misc.get_world_size()
@@ -826,6 +837,62 @@ def main(args):
         print(
             f"Batch shapes: samples={tuple(samples.shape)} targets={tuple(targets.shape)} attn_mask={tuple(attn_mask.shape)}"
         )
+        return
+
+    if args.shape_print_only:
+        print(f"Dataset root: {args.data_path}")
+        print(
+            f"Splits: train={len(dataset_train)} val={len(dataset_val)} test={len(dataset_test)}"
+        )
+        if train_base is not None and len(train_base) > 0:
+            raw_signal, raw_target = train_base[0]
+            raw_signal = np.asarray(raw_signal)
+            raw_target = np.asarray(raw_target)
+            print(
+                "Raw sample shapes: signal={signal} target={target}".format(
+                    signal=tuple(raw_signal.shape), target=tuple(raw_target.shape)
+                )
+            )
+        adapted_sample = dataset_train[0]
+        if len(adapted_sample) == 4:
+            tokens, target, attn_mask, _ = adapted_sample
+        else:
+            tokens, target, attn_mask = adapted_sample
+        print(
+            "Adapted sample shapes: tokens={tokens} target={target} attn_mask={attn}".format(
+                tokens=tuple(tokens.shape),
+                target=tuple(np.asarray(target).shape),
+                attn=tuple(attn_mask.shape),
+            )
+        )
+        sample_batch = next(iter(data_loader_train))
+        if len(sample_batch) == 4:
+            samples, targets, attn_mask, _ = sample_batch
+        else:
+            samples, targets, attn_mask = sample_batch
+        print(
+            "Batch shapes: samples={samples} targets={targets} attn_mask={attn}".format(
+                samples=tuple(samples.shape),
+                targets=tuple(targets.shape),
+                attn=tuple(attn_mask.shape),
+            )
+        )
+        deps = load_training_deps()
+        models_enc_one_tok_reg = deps["models_enc_one_tok_reg"]
+        model = models_enc_one_tok_reg.__dict__[args.model](
+            img_size=(160, 192, 160),
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
+        )
+        model.to(device)
+        model.eval()
+        with torch.no_grad():
+            outputs = model(
+                samples.to(device, non_blocking=True),
+                attn_mask.to(device, non_blocking=True),
+            )
+        print(f"Forward pass output shape: {tuple(outputs.shape)}")
         return
 
     deps = load_training_deps()
