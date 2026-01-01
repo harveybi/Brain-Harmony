@@ -144,6 +144,55 @@ def collate_brain_signals(batch):
     return tokens, targets, attn_masks, list(sample_ids)
 
 
+def resolve_sample_id(base_dataset, idx):
+    if hasattr(base_dataset, "keys"):
+        key_info = base_dataset.keys[idx]
+        return f"{key_info['dataset']}:{key_info['key']}"
+    return str(idx)
+
+
+def validate_adni_label_contract(base_dataset, split_name):
+    counts = {0: 0, 1: 0}
+    invalid = []
+
+    for idx in range(len(base_dataset)):
+        _, target = base_dataset[idx]
+        target_tensor = torch.as_tensor(target).detach().cpu()
+        flat = target_tensor.flatten().to(torch.float32)
+
+        if flat.numel() == 1:
+            value = float(flat.item())
+            if not np.isfinite(value) or value not in (0.0, 1.0):
+                invalid.append((resolve_sample_id(base_dataset, idx), flat.tolist()))
+            else:
+                counts[int(value)] += 1
+        elif flat.numel() == 2:
+            values = flat.numpy()
+            if not np.all(np.isfinite(values)) or not np.all(
+                np.isin(values, [0.0, 1.0])
+            ):
+                invalid.append((resolve_sample_id(base_dataset, idx), values.tolist()))
+            elif int(values.sum()) != 1:
+                invalid.append((resolve_sample_id(base_dataset, idx), values.tolist()))
+            else:
+                counts[int(np.argmax(values))] += 1
+        else:
+            invalid.append((resolve_sample_id(base_dataset, idx), flat.tolist()))
+
+    if invalid:
+        samples = ", ".join(f"{sid}={val}" for sid, val in invalid[:5])
+        raise ValueError(
+            f"ADNI label contract failed for {split_name}. "
+            "Expected scalar 0/1 or one-hot [1,0]/[0,1]. "
+            f"Examples: {samples}"
+        )
+
+    print(
+        f"ADNI label histogram ({split_name}): 0={counts[0]} 1={counts[1]}"
+    )
+    return counts
+
+
 def resolve_git_commit(repo_root):
     try:
         git_commit = subprocess.check_output(
@@ -673,6 +722,10 @@ def main(args):
         train_base, test_base, val_base = load_brain_datasets(
             args.data_path, dataset_cfg["loader_name"]
         )
+        if args.dataset_name == "ADNI":
+            validate_adni_label_contract(train_base, "train")
+            validate_adni_label_contract(val_base, "val")
+            validate_adni_label_contract(test_base, "test")
         dataset_train = BrainSignalFinetuneDataset(train_base)
         dataset_val = BrainSignalFinetuneDataset(val_base)
         dataset_test = BrainSignalFinetuneDataset(test_base)
