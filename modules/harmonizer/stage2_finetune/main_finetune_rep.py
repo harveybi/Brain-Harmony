@@ -114,9 +114,10 @@ def adapt_adni_signal(
 
 
 class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset, adapt_config=None):
+    def __init__(self, base_dataset, adapt_config=None, dataset_name=None):
         self.base_dataset = base_dataset
         self.adapt_config = adapt_config or DEFAULT_ADAPT_CONFIG
+        self.dataset_name = dataset_name
 
     def __len__(self):
         return len(self.base_dataset)
@@ -124,11 +125,14 @@ class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         signal, target = self.base_dataset[idx]
         tokens, attn_mask = adapt_adni_signal(signal, **self.adapt_config)
-        target_tensor = torch.as_tensor(target)
-        if target_tensor.numel() > 1:
-            target = int(torch.argmax(target_tensor).item())
+        if self.dataset_name == "ADNI":
+            target = normalize_adni_label(target, sample_index=idx)
         else:
-            target = int(target_tensor.item())
+            target_tensor = torch.as_tensor(target)
+            if target_tensor.numel() > 1:
+                target = int(torch.argmax(target_tensor).item())
+            else:
+                target = int(target_tensor.item())
         sample_id = str(idx)
         if hasattr(self.base_dataset, "keys"):
             key_info = self.base_dataset.keys[idx]
@@ -142,6 +146,54 @@ def collate_brain_signals(batch):
     targets = torch.tensor(targets, dtype=torch.long)
     attn_masks = torch.stack(attn_masks, dim=0)
     return tokens, targets, attn_masks, list(sample_ids)
+
+
+def normalize_adni_label(target, sample_index=None):
+    target_tensor = torch.as_tensor(target)
+    if target_tensor.numel() == 0:
+        raise ValueError(f"ADNI label is empty for sample {sample_index}.")
+    if not torch.isfinite(target_tensor).all():
+        raise ValueError(f"ADNI label has NaN/inf for sample {sample_index}.")
+    if target_tensor.numel() == 1:
+        value = float(target_tensor.item())
+        if np.isclose(value, 0.0):
+            return 0
+        if np.isclose(value, 1.0):
+            return 1
+        raise ValueError(
+            f"ADNI label must be 0/1 or one-hot [1,0]/[0,1]; got {value} for sample {sample_index}."
+        )
+    target_tensor = target_tensor.reshape(-1)
+    if target_tensor.numel() != 2:
+        raise ValueError(
+            f"ADNI one-hot label must have length 2; got {target_tensor.numel()} for sample {sample_index}."
+        )
+    if torch.any(target_tensor < 0):
+        raise ValueError(
+            f"ADNI one-hot label contains negative values for sample {sample_index}."
+        )
+    if not np.isclose(float(target_tensor.sum().item()), 1.0):
+        raise ValueError(
+            f"ADNI one-hot label must sum to 1 for sample {sample_index}."
+        )
+    if not torch.all((target_tensor == 0) | (target_tensor == 1)):
+        raise ValueError(
+            f"ADNI one-hot label must be hard 0/1 for sample {sample_index}."
+        )
+    return int(torch.argmax(target_tensor).item())
+
+
+def log_adni_label_histogram(dataset, split_name):
+    counts = {0: 0, 1: 0}
+    for idx in range(len(dataset)):
+        _, target = dataset[idx]
+        label = normalize_adni_label(target, sample_index=idx)
+        counts[label] += 1
+    print(f"ADNI label histogram ({split_name}): CN=0:{counts[0]} AD=1:{counts[1]}")
+    if counts[0] == 0 or counts[1] == 0:
+        print(
+            f"Warning: ADNI {split_name} split is missing a class (CN=0:{counts[0]} AD=1:{counts[1]})."
+        )
 
 
 def resolve_git_commit(repo_root):
@@ -673,9 +725,19 @@ def main(args):
         train_base, test_base, val_base = load_brain_datasets(
             args.data_path, dataset_cfg["loader_name"]
         )
-        dataset_train = BrainSignalFinetuneDataset(train_base)
-        dataset_val = BrainSignalFinetuneDataset(val_base)
-        dataset_test = BrainSignalFinetuneDataset(test_base)
+        if args.dataset_name == "ADNI":
+            log_adni_label_histogram(train_base, "train")
+            log_adni_label_histogram(val_base, "val")
+            log_adni_label_histogram(test_base, "test")
+        dataset_train = BrainSignalFinetuneDataset(
+            train_base, dataset_name=args.dataset_name
+        )
+        dataset_val = BrainSignalFinetuneDataset(
+            val_base, dataset_name=args.dataset_name
+        )
+        dataset_test = BrainSignalFinetuneDataset(
+            test_base, dataset_name=args.dataset_name
+        )
         collate_fn = collate_brain_signals
     elif args.dataset_name == "AbideI":
         root_dir = "experiments/stage0_embed/downstream_embed/AbideI"
