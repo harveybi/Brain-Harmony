@@ -76,6 +76,7 @@ echo "batch size: $BATCH_SIZE"
 echo "epochs: $EPOCHS"
 if [ -n "${RANK:-}" ]; then
     echo "rank ${RANK} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+    echo "rank ${RANK} SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>} SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-<unset>}"
 fi
 case $DATASET_NAME in
     "SEEDV")
