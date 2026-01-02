@@ -33,6 +33,12 @@ BATCH_SIZE="${BATCH_SIZE:-16}"
 EPOCHS="${EPOCHS:-50}"
 NB_CLASSES=2
 
+if [ -n "${SLURM_PROCID:-}" ] && [ -z "${RANK:-}" ]; then
+    export WORLD_SIZE="${SLURM_NTASKS:-1}"
+    export RANK="${SLURM_PROCID}"
+    export LOCAL_RANK="${SLURM_LOCALID:-0}"
+fi
+
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
     "base")
