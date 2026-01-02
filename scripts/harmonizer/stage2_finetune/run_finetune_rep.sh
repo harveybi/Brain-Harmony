@@ -39,6 +39,10 @@ if [ -n "${SLURM_PROCID:-}" ] && [ -z "${RANK:-}" ]; then
     export LOCAL_RANK="${SLURM_LOCALID:-0}"
 fi
 
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && [ "${CUDA_VISIBLE_DEVICES#*,}" = "${CUDA_VISIBLE_DEVICES}" ]; then
+    export LOCAL_RANK=0
+fi
+
 
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
