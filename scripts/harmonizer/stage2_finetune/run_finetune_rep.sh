@@ -74,6 +74,9 @@ echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS"
 echo "batch size: $BATCH_SIZE"
 echo "epochs: $EPOCHS"
+if [ -n "${RANK:-}" ]; then
+    echo "rank ${RANK} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+fi
 case $DATASET_NAME in
     "SEEDV")
         NB_CLASSES=5
