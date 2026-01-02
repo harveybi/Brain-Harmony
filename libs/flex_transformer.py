@@ -95,7 +95,7 @@ class Attention(nn.Module):
 
     def forward(self, x, attention_mask, output_attentions=False):
         if attention_mask is not None:
-            from attn_utils import expand_mask
+            from attn_utils.expand_mask import _expand_mask as expand_mask
 
             attention_mask = expand_mask(attention_mask, x.dtype)
 
