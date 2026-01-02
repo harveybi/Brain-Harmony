@@ -151,19 +151,55 @@ def resolve_sample_id(base_dataset, idx):
     return str(idx)
 
 
-def validate_adni_label_contract(base_dataset, split_name):
+def _preview_target(target, target_tensor=None):
+    if target_tensor is not None:
+        try:
+            return target_tensor.flatten().tolist()
+        except Exception:
+            return repr(target)
+    return repr(target)
+
+
+def ensure_lmdb_split(data_root, dataset_name, split_name):
+    lmdb_path = os.path.join(data_root, dataset_name, split_name, "BrainSignal.lmdb")
+    if not os.path.isdir(lmdb_path):
+        raise FileNotFoundError(
+            f"Missing LMDB split: {lmdb_path}. Expected {dataset_name}/{split_name}/BrainSignal.lmdb"
+        )
+    return lmdb_path
+
+
+def ensure_split_non_empty(base_dataset, split_name, dataset_name):
+    if len(base_dataset) == 0:
+        raise ValueError(
+            f"{dataset_name} split {split_name} is empty. Check LMDB contents."
+        )
+
+
+def validate_binary_label_contract(base_dataset, split_name, dataset_name):
     counts = {0: 0, 1: 0}
     invalid = []
 
     for idx in range(len(base_dataset)):
         _, target = base_dataset[idx]
-        target_tensor = torch.as_tensor(target).detach().cpu()
+        try:
+            target_tensor = torch.as_tensor(target).detach().cpu()
+        except Exception:
+            invalid.append((resolve_sample_id(base_dataset, idx), repr(target)))
+            continue
+
+        if target_tensor.numel() == 0:
+            invalid.append((resolve_sample_id(base_dataset, idx), []))
+            continue
+
         flat = target_tensor.flatten().to(torch.float32)
 
         if flat.numel() == 1:
             value = float(flat.item())
             if not np.isfinite(value) or value not in (0.0, 1.0):
-                invalid.append((resolve_sample_id(base_dataset, idx), flat.tolist()))
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
             else:
                 counts[int(value)] += 1
         elif flat.numel() == 2:
@@ -171,27 +207,136 @@ def validate_adni_label_contract(base_dataset, split_name):
             if not np.all(np.isfinite(values)) or not np.all(
                 np.isin(values, [0.0, 1.0])
             ):
-                invalid.append((resolve_sample_id(base_dataset, idx), values.tolist()))
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
             elif int(values.sum()) != 1:
-                invalid.append((resolve_sample_id(base_dataset, idx), values.tolist()))
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
             else:
                 counts[int(np.argmax(values))] += 1
         else:
-            invalid.append((resolve_sample_id(base_dataset, idx), flat.tolist()))
+            invalid.append(
+                (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+            )
 
     if invalid:
         samples = ", ".join(f"{sid}={val}" for sid, val in invalid[:5])
         raise ValueError(
-            f"ADNI label contract failed for {split_name}. "
-            "Expected scalar 0/1 or one-hot [1,0]/[0,1]. "
+            f"{dataset_name} label contract failed for {split_name}. "
+            "Expected scalar 0/1 or one-hot [1,0]/[0,1] with finite values. "
             f"Examples: {samples}"
         )
 
     print(
-        f"ADNI label histogram ({split_name}): 0={counts[0]} 1={counts[1]}"
+        f"{dataset_name} label histogram ({split_name}): 0={counts[0]} 1={counts[1]}"
     )
     return counts
 
+
+def validate_multiclass_label_contract(
+    base_dataset, split_name, dataset_name, nb_classes
+):
+    counts = {cls: 0 for cls in range(nb_classes)}
+    invalid = []
+
+    for idx in range(len(base_dataset)):
+        _, target = base_dataset[idx]
+        try:
+            target_tensor = torch.as_tensor(target).detach().cpu()
+        except Exception:
+            invalid.append((resolve_sample_id(base_dataset, idx), repr(target)))
+            continue
+
+        if target_tensor.numel() == 0:
+            invalid.append((resolve_sample_id(base_dataset, idx), []))
+            continue
+
+        flat = target_tensor.flatten().to(torch.float32)
+        if flat.numel() == 1:
+            value = float(flat.item())
+            if not np.isfinite(value) or int(value) != value:
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
+                continue
+            value = int(value)
+            if value < 0 or value >= nb_classes:
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
+                continue
+            counts[value] += 1
+        elif flat.numel() == nb_classes:
+            values = flat.numpy()
+            if not np.all(np.isfinite(values)) or not np.all(
+                np.isin(values, [0.0, 1.0])
+            ):
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
+            elif int(values.sum()) != 1:
+                invalid.append(
+                    (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+                )
+            else:
+                counts[int(np.argmax(values))] += 1
+        else:
+            invalid.append(
+                (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+            )
+
+    if invalid:
+        samples = ", ".join(f"{sid}={val}" for sid, val in invalid[:5])
+        raise ValueError(
+            f"{dataset_name} label contract failed for {split_name}. "
+            "Expected class index or one-hot vector with finite values. "
+            f"Examples: {samples}"
+        )
+
+    summary = " ".join(f"{cls}={count}" for cls, count in counts.items())
+    print(f"{dataset_name} label histogram ({split_name}): {summary}")
+    return counts
+
+
+def validate_label_cardinality(counts, split_name, dataset_name, nb_classes):
+    missing = [cls for cls, count in counts.items() if count == 0]
+    if missing:
+        raise ValueError(
+            f"{dataset_name} label cardinality failed for {split_name}. "
+            f"Missing classes: {missing} (expected {nb_classes} classes)."
+        )
+
+
+def validate_adni_label_contract(base_dataset, split_name):
+    return validate_binary_label_contract(base_dataset, split_name, "ADNI")
+
+
+def validate_dataset_splits(data_root, dataset_cfg, dataset_name, splits):
+    for split_name, base_dataset in splits:
+        ensure_lmdb_split(data_root, dataset_cfg["loader_name"], split_name)
+        ensure_split_non_empty(base_dataset, split_name, dataset_name)
+        if dataset_cfg["task"] == "binary":
+            if dataset_name == "ADNI":
+                counts = validate_adni_label_contract(base_dataset, split_name)
+            else:
+                counts = validate_binary_label_contract(
+                    base_dataset, split_name, dataset_name
+                )
+            validate_label_cardinality(
+                counts, split_name, dataset_name, dataset_cfg["nb_classes"]
+            )
+        elif dataset_cfg["task"] == "multiclass":
+            counts = validate_multiclass_label_contract(
+                base_dataset,
+                split_name,
+                dataset_name,
+                dataset_cfg["nb_classes"],
+            )
+            validate_label_cardinality(
+                counts, split_name, dataset_name, dataset_cfg["nb_classes"]
+            )
 
 def resolve_git_commit(repo_root):
     try:
@@ -728,10 +873,16 @@ def main(args):
         train_base, test_base, val_base = load_brain_datasets(
             args.data_path, dataset_cfg["loader_name"]
         )
-        if args.dataset_name == "ADNI":
-            validate_adni_label_contract(train_base, "train")
-            validate_adni_label_contract(val_base, "val")
-            validate_adni_label_contract(test_base, "test")
+        validate_dataset_splits(
+            args.data_path,
+            dataset_cfg,
+            args.dataset_name,
+            [
+                ("train", train_base),
+                ("val", val_base),
+                ("test", test_base),
+            ],
+        )
         dataset_train = BrainSignalFinetuneDataset(train_base)
         dataset_val = BrainSignalFinetuneDataset(val_base)
         dataset_test = BrainSignalFinetuneDataset(test_base)
