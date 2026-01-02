@@ -122,7 +122,6 @@ class Attention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(B, 1, N, src_len)}, but is {attention_mask.size()}"
                 )
-            breakpoint()
             attn = attn + attention_mask
 
         attn = attn.softmax(dim=-1)
