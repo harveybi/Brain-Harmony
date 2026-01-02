@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # 检查参数
-if [ $# -ne 6 ]; then
-    echo "用法: $0 <模型大小> <num_latent_tokens> <数据集> <随机种子> <数据根目录> <输出目录>"
+if [ $# -ne 6 ] && [ $# -ne 4 ]; then
+    echo "用法: $0 <模型大小> <num_latent_tokens> <数据集> <随机种子> [数据根目录 输出目录]"
     echo "模型大小: base, small, large"
     echo "数据集: 数据集名称"
     echo "随机种子: 用于数据分割的随机种子"
-    echo "数据根目录: 例如 /p/project1/hai_1024/data"
-    echo "输出目录: 例如 /p/project1/hai_1024/Brain-Harmony/experiments"
+    echo "数据根目录: 例如 /p/project1/hai_1024/data (可用 DATA_ROOT 覆盖)"
+    echo "输出目录: 例如 /p/project1/hai_1024/Brain-Harmony/experiments (可用 OUTPUT_ROOT 覆盖)"
     echo "例如: $0 base 128 ADNI 42 /p/project1/hai_1024/data /p/project1/hai_1024/Brain-Harmony/experiments"
     exit 1
 fi
@@ -17,8 +17,17 @@ MODEL_SIZE=$1
 NUM_LATENT_TOKENS=$2
 DATASET_NAME=$3
 SPLIT_SEED=$4
-DATA_ROOT=$5
-OUTPUT_ROOT=$6
+if [ $# -eq 6 ]; then
+    DATA_ROOT=$5
+    OUTPUT_ROOT=$6
+else
+    DATA_ROOT="${DATA_ROOT:-}"
+    OUTPUT_ROOT="${OUTPUT_ROOT:-}"
+fi
+if [ -z "${DATA_ROOT}" ] || [ -z "${OUTPUT_ROOT}" ]; then
+    echo "错误: DATA_ROOT 和 OUTPUT_ROOT 不能为空（可作为参数或环境变量提供）"
+    exit 1
+fi
 NUM_WORKERS="${NUM_WORKERS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 NB_CLASSES=2
