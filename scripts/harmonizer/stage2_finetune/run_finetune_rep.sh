@@ -30,6 +30,7 @@ if [ -z "${DATA_ROOT}" ] || [ -z "${OUTPUT_ROOT}" ]; then
 fi
 NUM_WORKERS="${NUM_WORKERS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
+EPOCHS="${EPOCHS:-50}"
 NB_CLASSES=2
 
 # 验证模型大小并设置对应的缩写
@@ -61,6 +62,7 @@ echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS"
 echo "batch size: $BATCH_SIZE"
+echo "epochs: $EPOCHS"
 case $DATASET_NAME in
     "SEEDV")
         NB_CLASSES=5
@@ -82,7 +84,7 @@ python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --model vit_base_patch16 \
     --output_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
     --log_dir ${OUTPUT_ROOT}/stage2_finetune/harmonizer_vit${ms}_${NUM_LATENT_TOKENS} \
-    --epochs 50 \
+    --epochs ${EPOCHS} \
     --lr 5e-4 --layer_decay 0.65 \
     --weight_decay 0.05 --drop_path 0.1 \
     --dist_eval \
