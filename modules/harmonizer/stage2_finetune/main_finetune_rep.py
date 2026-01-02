@@ -74,6 +74,7 @@ DEFAULT_ADAPT_CONFIG = {
     "token_dim": ADNI_TOKEN_DIM,
     "pad_tokens": ADNI_PAD_TOKENS,
 }
+DEFAULT_DATA_ROOT = os.environ.get("DATA_ROOT", "")
 
 
 def adapt_adni_signal(
@@ -752,9 +753,9 @@ def get_args_parser():
 
     parser.add_argument(
         "--data_path",
-        default="/datasets01/imagenet_full_size/061417/",
+        default=DEFAULT_DATA_ROOT,
         type=str,
-        help="dataset path",
+        help="dataset root (defaults to DATA_ROOT if set)",
     )
     parser.add_argument(
         "--nb_classes",
@@ -862,6 +863,10 @@ def main(args):
     train_base = None
 
     if dataset_cfg is not None:
+        if not args.data_path:
+            raise ValueError(
+                f"{args.dataset_name} requires --data_path or DATA_ROOT to be set."
+            )
         if args.nb_classes == 1000:
             args.nb_classes = dataset_cfg["nb_classes"]
         elif args.nb_classes != dataset_cfg["nb_classes"]:
