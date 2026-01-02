@@ -150,6 +150,20 @@ class FlashAttention2(Attention):
         output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         output_attentions = False
+        if "_flash_attention_forward" not in globals():
+            logger.warning(
+                "FlashAttention2 kernel unavailable; falling back to standard attention."
+            )
+            return super().forward(
+                hidden_states, attention_mask, output_attentions
+            )
+        if not hasattr(self, "config"):
+            logger.warning(
+                "FlashAttention2 missing config; falling back to standard attention."
+            )
+            return super().forward(
+                hidden_states, attention_mask, output_attentions
+            )
 
         B, N, C = hidden_states.shape
 
@@ -173,7 +187,7 @@ class FlashAttention2(Attention):
             elif hasattr(self.config, "_pre_quantization_dtype"):
                 target_dtype = self.config._pre_quantization_dtype
             else:
-                target_dtype = self.q_proj.weight.dtype
+                target_dtype = self.qkv.weight.dtype
 
             logger.warning(
                 f"The input hidden states seems to be silently casted in float32, this might be related to"
