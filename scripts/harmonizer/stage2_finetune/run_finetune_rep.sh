@@ -39,6 +39,7 @@ if [ -n "${SLURM_PROCID:-}" ] && [ -z "${RANK:-}" ]; then
     export LOCAL_RANK="${SLURM_LOCALID:-0}"
 fi
 
+
 # 验证模型大小并设置对应的缩写
 case $MODEL_SIZE in
     "base")
