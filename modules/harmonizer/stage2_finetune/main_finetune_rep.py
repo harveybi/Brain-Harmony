@@ -87,6 +87,35 @@ DEFAULT_ADAPT_CONFIG = {
 DEFAULT_DATA_ROOT = os.environ.get("DATA_ROOT", "")
 
 
+def _target_token_count(adapt_config):
+    return int(
+        adapt_config["target_regions"] * adapt_config["target_time"]
+        + adapt_config["pad_tokens"]
+    )
+
+
+def maybe_resize_pos_embed(model, target_tokens):
+    pos_embed = getattr(model, "pos_embed", None)
+    if pos_embed is None or not hasattr(pos_embed, "shape"):
+        return
+    expected = target_tokens + 1
+    current = pos_embed.shape[1]
+    if current == expected:
+        return
+    if expected <= 1:
+        raise ValueError(f"Invalid target token count: {expected}")
+    cls_token = pos_embed[:, :1, :]
+    tokens = pos_embed[:, 1:, :].transpose(1, 2)
+    tokens = F.interpolate(tokens, size=expected - 1, mode="linear", align_corners=False)
+    tokens = tokens.transpose(1, 2)
+    model.pos_embed = torch.nn.Parameter(torch.cat([cls_token, tokens], dim=1))
+    print(
+        "Resized pos_embed from {current} to {expected} tokens to match adapted input.".format(
+            current=current, expected=expected
+        )
+    )
+
+
 def adapt_adni_signal(
     signal,
     target_regions=ADNI_NUM_REGIONS,
@@ -1051,6 +1080,8 @@ def main(args):
             drop_path_rate=args.drop_path,
             global_pool=args.global_pool,
         )
+        if dataset_cfg is not None:
+            maybe_resize_pos_embed(model, _target_token_count(DEFAULT_ADAPT_CONFIG))
         model.to(device)
         model.eval()
         with torch.no_grad():
@@ -1092,6 +1123,8 @@ def main(args):
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
     )
+    if dataset_cfg is not None:
+        maybe_resize_pos_embed(model, _target_token_count(DEFAULT_ADAPT_CONFIG))
 
     if args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location="cpu", weights_only=False)
