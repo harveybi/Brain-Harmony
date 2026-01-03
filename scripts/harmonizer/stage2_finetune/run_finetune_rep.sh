@@ -43,6 +43,7 @@ fi
 BATCH_SIZE="${BATCH_SIZE:-16}"
 EPOCHS="${EPOCHS:-50}"
 NB_CLASSES=2
+TRAIN_SEED="${TRAIN_SEED:-${SPLIT_SEED}}"
 
 if [ -n "${SLURM_PROCID:-}" ] && [ -z "${RANK:-}" ]; then
     export WORLD_SIZE="${SLURM_NTASKS:-1}"
@@ -80,6 +81,7 @@ echo "模型大小: $MODEL_SIZE (${ms})"
 echo "潜在令牌数量: $NUM_LATENT_TOKENS"
 echo "数据集: $DATASET_NAME"
 echo "随机种子: $SPLIT_SEED"
+echo "训练种子: $TRAIN_SEED"
 echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS (cpus-per-task=${SRUN_CPUS_PER_TASK:-unset})"
@@ -117,6 +119,7 @@ python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --nb_classes ${NB_CLASSES} \
     --dataset_name ${DATASET_NAME} \
     --split_seed ${SPLIT_SEED} \
+    --seed ${TRAIN_SEED} \
     --data_path ${DATA_ROOT} \
     --num_workers ${NUM_WORKERS} \
     --pin_mem \
