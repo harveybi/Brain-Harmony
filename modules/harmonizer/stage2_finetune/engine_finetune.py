@@ -13,6 +13,14 @@ import modules.harmonizer.util.lr_sched as lr_sched
 import modules.harmonizer.util.misc as misc
 
 
+def compute_balanced_accuracy(y_true, y_pred):
+    y_true_np = np.asarray(y_true)
+    y_pred_np = np.asarray(y_pred)
+    if y_true_np.size == 0 or y_pred_np.size == 0:
+        return 0.0
+    return balanced_accuracy_score(y_true_np, y_pred_np)
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -179,9 +187,7 @@ def evaluate(data_loader, model, device, dataset_name):
 
     y_pred = np.concatenate(all_preds) if all_preds else np.array([])
     y_true = np.concatenate(all_targets) if all_targets else np.array([])
-    bac = (
-        balanced_accuracy_score(y_true, y_pred) if y_true.size and y_pred.size else 0.0
-    )
+    bac = compute_balanced_accuracy(y_true, y_pred)
 
     kappa = None
     if dataset_name in multiclass_datasets and y_true.size and y_pred.size:
