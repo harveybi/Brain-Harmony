@@ -28,7 +28,18 @@ if [ -z "${DATA_ROOT}" ] || [ -z "${OUTPUT_ROOT}" ]; then
     echo "错误: DATA_ROOT 和 OUTPUT_ROOT 不能为空（可作为参数或环境变量提供）"
     exit 1
 fi
-NUM_WORKERS="${NUM_WORKERS:-10}"
+
+# Default threading policy to avoid CPU oversubscription.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+
+SRUN_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-${SRUN_CPUS_PER_TASK:-1}}"
+if [ -z "${NUM_WORKERS:-}" ]; then
+    NUM_WORKERS=$(( SRUN_CPUS_PER_TASK / 4 ))
+    if (( NUM_WORKERS < 1 )); then NUM_WORKERS=1; fi
+fi
 BATCH_SIZE="${BATCH_SIZE:-16}"
 EPOCHS="${EPOCHS:-50}"
 NB_CLASSES=2
@@ -71,7 +82,7 @@ echo "数据集: $DATASET_NAME"
 echo "随机种子: $SPLIT_SEED"
 echo "数据根目录: $DATA_ROOT"
 echo "输出目录: $OUTPUT_ROOT"
-echo "数据加载 worker 数: $NUM_WORKERS"
+echo "数据加载 worker 数: $NUM_WORKERS (cpus-per-task=${SRUN_CPUS_PER_TASK:-unset})"
 echo "batch size: $BATCH_SIZE"
 echo "epochs: $EPOCHS"
 if [ -n "${RANK:-}" ]; then
