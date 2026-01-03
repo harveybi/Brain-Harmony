@@ -17,7 +17,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score
 
 import modules.harmonizer.util.misc as misc
 from datasets.datasets import GenerateEmbedDataset_downstream
@@ -391,6 +391,14 @@ def resolve_git_commit(repo_root):
     return git_commit
 
 
+def _select_metric(metric_name, y_true, y_pred):
+    if metric_name == "bac":
+        return balanced_accuracy_score(y_true, y_pred)
+    if metric_name == "kappa":
+        return cohen_kappa_score(y_true, y_pred)
+    raise ValueError(f"Unsupported metric for run artifacts: {metric_name}")
+
+
 class BrainSignalDatasetFallback(torch.utils.data.Dataset):
     def __init__(self, root, split="train", dataset=None):
         self.root = root
@@ -527,12 +535,14 @@ def collect_predictions(data_loader, model, device):
         with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
             outputs = model(samples, attn_mask)
 
+        if outputs.ndim == 1:
+            outputs = outputs.unsqueeze(-1)
         probs = torch.softmax(outputs, dim=-1)
         preds = torch.argmax(probs, dim=-1)
         all_preds.append(preds.cpu().numpy())
         all_targets.append(targets.cpu().numpy())
         all_ids.extend(sample_ids)
-        all_probs.append(probs[:, 1].detach().cpu().numpy())
+        all_probs.append(probs.detach().cpu().numpy())
 
     y_pred = np.concatenate(all_preds)
     y_true = np.concatenate(all_targets)
@@ -1425,9 +1435,14 @@ def main(args):
         )
         fcntl.flock(f, fcntl.LOCK_UN)
 
-    if args.output_dir and args.dataset_name == "ADNI":
+    if (
+        args.output_dir
+        and dataset_cfg is not None
+        and dataset_cfg["task"] in {"binary", "multiclass"}
+    ):
         run_id = args.run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         git_commit = resolve_git_commit(PROJECT_ROOT)
+        metric_name = dataset_cfg["metric_key"]
 
         train_true, train_pred, train_prob, train_ids = collect_predictions(
             data_loader_train, model, device
@@ -1445,16 +1460,33 @@ def main(args):
             ("test", test_true, test_pred, test_prob, test_ids),
         ]
 
+        def _select_probabilities(probabilities, task):
+            prob_array = np.asarray(probabilities)
+            if task == "binary":
+                if prob_array.ndim == 1:
+                    return prob_array
+                if prob_array.shape[1] == 1:
+                    return prob_array[:, 0]
+                return prob_array[:, 1]
+            return prob_array
+
         for split_name, y_true, y_pred, prob, ids in splits:
-            bac = balanced_accuracy_score(y_true, y_pred)
+            y_true = np.asarray(y_true).reshape(-1)
+            y_pred = np.asarray(y_pred).reshape(-1)
+            prob_values = _select_probabilities(prob, dataset_cfg["task"])
+            metric_value = _select_metric(metric_name, y_true, y_pred)
             predictions = [
                 {
                     "id": sample_id,
                     "y_true": int(y_t),
                     "y_pred": int(y_p),
-                    "prob": float(p),
+                    "prob": (
+                        [float(value) for value in np.asarray(p).tolist()]
+                        if dataset_cfg["task"] == "multiclass"
+                        else float(p)
+                    ),
                 }
-                for sample_id, y_t, y_p, p in zip(ids, y_true, y_pred, prob)
+                for sample_id, y_t, y_p, p in zip(ids, y_true, y_pred, prob_values)
             ]
             write_run_artifact(
                 args.output_dir,
@@ -1462,8 +1494,8 @@ def main(args):
                 split_name,
                 args.dataset_name,
                 args.seed,
-                "bac",
-                bac,
+                metric_name,
+                metric_value,
                 predictions,
                 git_commit,
             )
