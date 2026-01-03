@@ -1,6 +1,7 @@
 
 import logging
 import math
+import types
 from typing import Optional, Tuple, Union
 
 import torch
@@ -140,6 +141,10 @@ class FlashAttention2(Attention):
         super().__init__(*args, **kwargs)
 
         self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
+        if not hasattr(self, "config"):
+            self.config = types.SimpleNamespace(
+                _pre_quantization_dtype=self.qkv.weight.dtype
+            )
 
     def forward(
         self,
@@ -152,13 +157,6 @@ class FlashAttention2(Attention):
         if "_flash_attention_forward" not in globals():
             logger.warning(
                 "FlashAttention2 kernel unavailable; falling back to standard attention."
-            )
-            return super().forward(
-                hidden_states, attention_mask, output_attentions
-            )
-        if not hasattr(self, "config"):
-            logger.warning(
-                "FlashAttention2 missing config; falling back to standard attention."
             )
             return super().forward(
                 hidden_states, attention_mask, output_attentions
