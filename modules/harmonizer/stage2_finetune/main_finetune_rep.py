@@ -36,10 +36,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 
+def _env_int(name, default):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid int for {name}: {value}") from exc
+
+
 ADNI_NUM_REGIONS = 400
-ADNI_TIME_TOKENS = 18
+ADNI_TIME_TOKENS = _env_int("ADNI_TIME_TOKENS", 18)
 ADNI_TOKEN_DIM = 768
-ADNI_PAD_TOKENS = 1200
+ADNI_PAD_TOKENS = _env_int("ADNI_PAD_TOKENS", 1200)
 
 DATASET_CONFIG = {
     "ADNI": {
