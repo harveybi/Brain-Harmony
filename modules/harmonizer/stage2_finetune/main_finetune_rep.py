@@ -85,6 +85,8 @@ DEFAULT_ADAPT_CONFIG = {
     "pad_tokens": ADNI_PAD_TOKENS,
 }
 DEFAULT_DATA_ROOT = os.environ.get("DATA_ROOT", "")
+DEFAULT_EMBED_ROOT = os.environ.get("EMBED_ROOT", "")
+DEFAULT_EMBED_SPLITS = os.environ.get("EMBED_SPLITS", "")
 
 
 def _target_token_count(adapt_config):
@@ -92,6 +94,35 @@ def _target_token_count(adapt_config):
         adapt_config["target_regions"] * adapt_config["target_time"]
         + adapt_config["pad_tokens"]
     )
+
+
+def resolve_embed_paths(dataset_name, split_seed):
+    dataset_upper = dataset_name.upper()
+    embed_root = os.environ.get(f"{dataset_upper}_EMBED_ROOT", DEFAULT_EMBED_ROOT)
+    embed_splits = os.environ.get(f"{dataset_upper}_EMBED_SPLITS", DEFAULT_EMBED_SPLITS)
+    if embed_root and embed_splits:
+        if os.path.isdir(embed_root) and os.path.isfile(embed_splits):
+            return embed_root, embed_splits
+
+    if dataset_upper == "ADNI":
+        default_root = os.path.join(
+            PROJECT_ROOT,
+            "Brain-Harmony",
+            "experiments",
+            "stage0_embed",
+            "downstream_embed",
+            "ADNI",
+        )
+        default_splits = os.path.join(
+            PROJECT_ROOT,
+            "results",
+            "ADNI",
+            f"adni_splits_seed{split_seed}.json",
+        )
+        if os.path.isdir(default_root) and os.path.isfile(default_splits):
+            return default_root, default_splits
+
+    return "", ""
 
 
 def maybe_resize_pos_embed(model, target_tokens):
@@ -910,37 +941,61 @@ def main(args):
     cudnn.benchmark = True
     dataset_cfg = DATASET_CONFIG.get(args.dataset_name)
     train_base = None
+    using_embeddings = False
+    embed_root = ""
+    embed_splits = ""
 
     if dataset_cfg is not None:
-        if not args.data_path:
-            raise ValueError(
-                f"{args.dataset_name} requires --data_path or DATA_ROOT to be set."
-            )
-        if args.nb_classes == 1000:
-            args.nb_classes = dataset_cfg["nb_classes"]
-        elif args.nb_classes != dataset_cfg["nb_classes"]:
+        embed_root, embed_splits = resolve_embed_paths(
+            args.dataset_name, args.split_seed
+        )
+        if embed_root and embed_splits:
             print(
-                "Warning: nb_classes mismatch for {dataset}. Using nb_classes={nb}.".format(
-                    dataset=args.dataset_name, nb=args.nb_classes
+                "Using downstream embeddings from {root} with splits {splits}".format(
+                    root=embed_root, splits=embed_splits
                 )
             )
-        train_base, test_base, val_base = load_brain_datasets(
-            args.data_path, dataset_cfg["loader_name"]
-        )
-        validate_dataset_splits(
-            args.data_path,
-            dataset_cfg,
-            args.dataset_name,
-            [
-                ("train", train_base),
-                ("val", val_base),
-                ("test", test_base),
-            ],
-        )
-        dataset_train = BrainSignalFinetuneDataset(train_base)
-        dataset_val = BrainSignalFinetuneDataset(val_base)
-        dataset_test = BrainSignalFinetuneDataset(test_base)
-        collate_fn = collate_brain_signals
+            dataset_train = GenerateEmbedDataset_downstream(
+                root_dir=embed_root, splits_file=embed_splits, split="train"
+            )
+            dataset_test = GenerateEmbedDataset_downstream(
+                root_dir=embed_root, splits_file=embed_splits, split="val"
+            )
+            dataset_val = GenerateEmbedDataset_downstream(
+                root_dir=embed_root, splits_file=embed_splits, split="test"
+            )
+            collate_fn = None
+            using_embeddings = True
+        else:
+            if not args.data_path:
+                raise ValueError(
+                    f"{args.dataset_name} requires --data_path or DATA_ROOT to be set."
+                )
+            if args.nb_classes == 1000:
+                args.nb_classes = dataset_cfg["nb_classes"]
+            elif args.nb_classes != dataset_cfg["nb_classes"]:
+                print(
+                    "Warning: nb_classes mismatch for {dataset}. Using nb_classes={nb}.".format(
+                        dataset=args.dataset_name, nb=args.nb_classes
+                    )
+                )
+            train_base, test_base, val_base = load_brain_datasets(
+                args.data_path, dataset_cfg["loader_name"]
+            )
+            validate_dataset_splits(
+                args.data_path,
+                dataset_cfg,
+                args.dataset_name,
+                [
+                    ("train", train_base),
+                    ("val", val_base),
+                    ("test", test_base),
+                ],
+            )
+            dataset_train = BrainSignalFinetuneDataset(train_base)
+            dataset_val = BrainSignalFinetuneDataset(val_base)
+            dataset_test = BrainSignalFinetuneDataset(test_base)
+            collate_fn = collate_brain_signals
     elif args.dataset_name == "AbideI":
         root_dir = "experiments/stage0_embed/downstream_embed/AbideI"
         splits_file = f"/scratch/Projects/project_312_HelenZhou/ABIDE1_fMRI_T1/data_splits_seed{args.split_seed}.json"
@@ -1030,7 +1085,11 @@ def main(args):
     )
 
     if args.dataset_init_only:
-        print(f"Dataset root: {args.data_path}")
+        if using_embeddings:
+            print(f"Embed root: {embed_root}")
+            print(f"Splits file: {embed_splits}")
+        else:
+            print(f"Dataset root: {args.data_path}")
         print(
             f"Splits: train={len(dataset_train)} val={len(dataset_val)} test={len(dataset_test)}"
         )
@@ -1045,7 +1104,11 @@ def main(args):
         return
 
     if args.shape_print_only:
-        print(f"Dataset root: {args.data_path}")
+        if using_embeddings:
+            print(f"Embed root: {embed_root}")
+            print(f"Splits file: {embed_splits}")
+        else:
+            print(f"Dataset root: {args.data_path}")
         print(
             f"Splits: train={len(dataset_train)} val={len(dataset_val)} test={len(dataset_test)}"
         )
