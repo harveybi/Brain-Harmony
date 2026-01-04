@@ -42,6 +42,7 @@ if [ -z "${NUM_WORKERS:-}" ]; then
 fi
 BATCH_SIZE="${BATCH_SIZE:-16}"
 EPOCHS="${EPOCHS:-50}"
+FINETUNE_CKPT="${FINETUNE_CKPT:-checkpoints/harmonix-f/model.pth}"
 NB_CLASSES=2
 TRAIN_SEED="${TRAIN_SEED:-${SPLIT_SEED}}"
 
@@ -87,6 +88,7 @@ echo "输出目录: $OUTPUT_ROOT"
 echo "数据加载 worker 数: $NUM_WORKERS (cpus-per-task=${SRUN_CPUS_PER_TASK:-unset})"
 echo "batch size: $BATCH_SIZE"
 echo "epochs: $EPOCHS"
+echo "finetune checkpoint: $FINETUNE_CKPT"
 if [ -n "${RANK:-}" ]; then
     echo "rank ${RANK} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
     echo "rank ${RANK} SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>} SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-<unset>}"
@@ -123,4 +125,4 @@ python modules/harmonizer/stage2_finetune/main_finetune_rep.py \
     --data_path ${DATA_ROOT} \
     --num_workers ${NUM_WORKERS} \
     --pin_mem \
-    --finetune checkpoints/harmonizer/model.pth
+    --finetune ${FINETUNE_CKPT}
