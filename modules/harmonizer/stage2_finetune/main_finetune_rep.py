@@ -620,7 +620,12 @@ def run_overfit_sanity(
 ):
     model.train()
     batch = next(iter(data_loader))
-    samples, targets, attn_mask, _ = batch
+    if len(batch) == 3:
+        samples, targets, attn_mask = batch
+    elif len(batch) == 4:
+        samples, targets, attn_mask, _ = batch
+    else:
+        raise ValueError("Expected batch with 3 or 4 elements.")
     samples = samples.to(device, non_blocking=True)
     targets = targets.to(device, non_blocking=True)
     attn_mask = attn_mask.to(device, non_blocking=True)
