@@ -552,12 +552,22 @@ def collect_predictions(data_loader, model, device):
     all_targets = []
     all_ids = []
     all_probs = []
+    offset = 0
 
     for batch in data_loader:
         if len(batch) == 4:
             samples, targets, attn_mask, sample_ids = batch
+        elif len(batch) == 3:
+            samples, targets, attn_mask = batch
+            batch_size = targets.shape[0] if hasattr(targets, "shape") else len(targets)
+            sample_ids = [f"idx_{offset + i}" for i in range(batch_size)]
+            offset += batch_size
         else:
-            raise ValueError("Expected batch with 4 elements for prediction collection.")
+            raise ValueError("Expected batch with 3 or 4 elements for prediction collection.")
+        if isinstance(sample_ids, torch.Tensor):
+            sample_ids = sample_ids.tolist()
+        elif isinstance(sample_ids, tuple):
+            sample_ids = list(sample_ids)
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
