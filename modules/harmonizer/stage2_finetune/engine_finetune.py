@@ -5,6 +5,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, f1_score
 from timm.data import Mixup
 from timm.utils import accuracy
@@ -166,32 +167,62 @@ def evaluate(data_loader, model, device, dataset_name):
 
         predict = np.argmax(output.detach().cpu().numpy(), axis=1)
 
-        target_np = target.detach().cpu().numpy()
-        if dataset_name in multiclass_datasets or dataset_name == "PPMI":
-            f1score = f1_score(target_np, predict, average="weighted")
-        else:
-            f1score = f1_score(target_np, predict)
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["f1score"].update(f1score, n=batch_size)
+        if "f1score" not in metric_logger.meters:
+            metric_logger.meters["f1score"] = misc.SmoothedValue()
 
         all_preds.append(predict)
         all_targets.append(target.detach().cpu().numpy())
     metric_logger.synchronize_between_processes()
-    print(
-        "* Acc@1 {top1.global_avg:.3f} f1score {f1.global_avg:.3f} loss {losses.global_avg:.3f}".format(
-            top1=metric_logger.acc1, f1=metric_logger.f1score, losses=metric_logger.loss
-        )
-    )
 
     y_pred = np.concatenate(all_preds) if all_preds else np.array([])
     y_true = np.concatenate(all_targets) if all_targets else np.array([])
-    bac = compute_balanced_accuracy(y_true, y_pred)
 
-    kappa = None
-    if dataset_name in multiclass_datasets and y_true.size and y_pred.size:
-        kappa = cohen_kappa_score(y_true, y_pred)
+    def _gather_concat(array):
+        if not misc.is_dist_avail_and_initialized():
+            return array
+        local = torch.as_tensor(array, device=device)
+        local_size = torch.tensor([local.numel()], device=device, dtype=torch.long)
+        size_list = [torch.zeros_like(local_size) for _ in range(dist.get_world_size())]
+        dist.all_gather(size_list, local_size)
+        sizes = [int(s.item()) for s in size_list]
+        max_size = max(sizes) if sizes else 0
+        if local.numel() < max_size:
+            padded = torch.zeros(max_size, device=device, dtype=local.dtype)
+            if local.numel() > 0:
+                padded[: local.numel()] = local
+        else:
+            padded = local
+        gather_list = [
+            torch.zeros(max_size, device=device, dtype=local.dtype)
+            for _ in range(dist.get_world_size())
+        ]
+        dist.all_gather(gather_list, padded)
+        arrays = [g[: sizes[i]].cpu().numpy() for i, g in enumerate(gather_list)]
+        return np.concatenate(arrays) if arrays else np.array([])
+
+    y_true = _gather_concat(y_true)
+    y_pred = _gather_concat(y_pred)
+
+    if y_true.size == 0 or y_pred.size == 0:
+        acc1 = 0.0
+        f1score = 0.0
+        bac = 0.0
+        kappa = None
+    else:
+        acc1 = 100.0 * float(np.mean(y_true == y_pred))
+        if dataset_name in multiclass_datasets or dataset_name == "PPMI":
+            f1score = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+        else:
+            f1score = f1_score(y_true, y_pred, zero_division=0)
+        bac = compute_balanced_accuracy(y_true, y_pred)
+        kappa = None
+        if dataset_name in multiclass_datasets and y_true.size and y_pred.size:
+            kappa = cohen_kappa_score(y_true, y_pred)
+
+    print(f"* Acc@1 {acc1:.3f} f1score {f1score:.3f} loss {metric_logger.loss.global_avg:.3f}")
 
     if kappa is None:
         print(f"* Balanced accuracy {bac:.3f}")
@@ -199,6 +230,8 @@ def evaluate(data_loader, model, device, dataset_name):
         print(f"* Balanced accuracy {bac:.3f} kappa {kappa:.3f}")
 
     metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    metrics["acc1"] = acc1
+    metrics["f1score"] = f1score
     metrics["bac"] = bac
     if kappa is not None:
         metrics["kappa"] = kappa
