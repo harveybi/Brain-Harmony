@@ -167,14 +167,19 @@ def evaluate(data_loader, model, device, dataset_name):
 
         predict = np.argmax(output.detach().cpu().numpy(), axis=1)
 
+        target_np = target.detach().cpu().numpy()
+        if dataset_name in multiclass_datasets or dataset_name == "PPMI":
+            f1score = f1_score(target_np, predict, average="weighted", zero_division=0)
+        else:
+            f1score = f1_score(target_np, predict, zero_division=0)
+
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        if "f1score" not in metric_logger.meters:
-            metric_logger.meters["f1score"] = misc.SmoothedValue()
+        metric_logger.meters["f1score"].update(f1score, n=batch_size)
 
         all_preds.append(predict)
-        all_targets.append(target.detach().cpu().numpy())
+        all_targets.append(target_np)
     metric_logger.synchronize_between_processes()
 
     y_pred = np.concatenate(all_preds) if all_preds else np.array([])
