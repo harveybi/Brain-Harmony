@@ -1445,6 +1445,18 @@ def main(args):
             log_writer.add_scalar("perf/test_bac", test_stats["bac"], epoch)
             if "kappa" in test_stats:
                 log_writer.add_scalar("perf/test_kappa", test_stats["kappa"], epoch)
+            log_writer.add_scalar("val/acc1", test_stats["acc1"], epoch)
+            log_writer.add_scalar("val/f1score", test_stats["f1score"], epoch)
+            log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
+            log_writer.add_scalar("val/bac", test_stats["bac"], epoch)
+            if "kappa" in test_stats:
+                log_writer.add_scalar("val/kappa", test_stats["kappa"], epoch)
+            log_writer.add_scalar("test/acc1", test_test_stats["acc1"], epoch)
+            log_writer.add_scalar("test/f1score", test_test_stats["f1score"], epoch)
+            log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
+            log_writer.add_scalar("test/bac", test_test_stats["bac"], epoch)
+            if "kappa" in test_test_stats:
+                log_writer.add_scalar("test/kappa", test_test_stats["kappa"], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
