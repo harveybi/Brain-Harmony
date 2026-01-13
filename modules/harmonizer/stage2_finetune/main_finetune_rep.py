@@ -973,10 +973,10 @@ def main(args):
             dataset_train = GenerateEmbedDataset_downstream(
                 root_dir=embed_root, splits_file=embed_splits, split="train"
             )
-            dataset_test = GenerateEmbedDataset_downstream(
+            dataset_val = GenerateEmbedDataset_downstream(
                 root_dir=embed_root, splits_file=embed_splits, split="val"
             )
-            dataset_val = GenerateEmbedDataset_downstream(
+            dataset_test = GenerateEmbedDataset_downstream(
                 root_dir=embed_root, splits_file=embed_splits, split="test"
             )
             collate_fn = None
@@ -1017,10 +1017,10 @@ def main(args):
         dataset_train = GenerateEmbedDataset_downstream(
             root_dir=root_dir, splits_file=splits_file, split="train"
         )
-        dataset_test = GenerateEmbedDataset_downstream(
+        dataset_val = GenerateEmbedDataset_downstream(
             root_dir=root_dir, splits_file=splits_file, split="val"
         )
-        dataset_val = GenerateEmbedDataset_downstream(
+        dataset_test = GenerateEmbedDataset_downstream(
             root_dir=root_dir, splits_file=splits_file, split="test"
         )
         collate_fn = None
