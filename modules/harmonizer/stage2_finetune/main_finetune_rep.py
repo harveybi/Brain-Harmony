@@ -1326,7 +1326,7 @@ def main(args):
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device, args.dataset_name)
         print(
-            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%"
+            f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}%"
         )
         exit(0)
 
@@ -1403,7 +1403,7 @@ def main(args):
         val_kappa = test_stats.get("kappa")
         val_kappa_msg = f" kappa={val_kappa:.3f}" if val_kappa is not None else ""
         print(
-            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
+            f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
         )
 
         test_test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
