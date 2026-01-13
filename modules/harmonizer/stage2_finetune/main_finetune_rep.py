@@ -1486,7 +1486,7 @@ def main(args):
     )
     test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
     print(
-        f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}% bac={test_stats['bac']:.3f}"
+        f"Accuracy of the network on the {len(dataset_test)} test images: {test_stats['acc1']:.1f}% bac={test_stats['bac']:.3f}"
     )
 
     header = [
