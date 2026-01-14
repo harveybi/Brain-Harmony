@@ -141,8 +141,11 @@ def evaluate(data_loader, model, device, dataset_name):
         attn_list = None
         with torch.amp.autocast("cuda"):
             outputs = model(images, attn_mask)
-            if len(outputs) == 2:
-                output, attn_list = outputs[0]
+            if isinstance(outputs, (tuple, list)):
+                if len(outputs) == 2:
+                    output, attn_list = outputs
+                else:
+                    output = outputs[0]
             else:
                 output = outputs
 
