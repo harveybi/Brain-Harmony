@@ -121,6 +121,23 @@ def resolve_embed_paths(dataset_name, split_seed):
         )
         if os.path.isdir(default_root) and os.path.isfile(default_splits):
             return default_root, default_splits
+    if dataset_upper == "ADHD200":
+        default_root = os.path.join(
+            PROJECT_ROOT,
+            "Brain-Harmony",
+            "experiments",
+            "stage0_embed",
+            "downstream_embed",
+            "ADHD200",
+        )
+        default_splits = os.path.join(
+            PROJECT_ROOT,
+            "results",
+            "ADHD200",
+            f"adhd200_splits_seed{split_seed}.json",
+        )
+        if os.path.isdir(default_root) and os.path.isfile(default_splits):
+            return default_root, default_splits
 
     return "", ""
 
@@ -499,10 +516,10 @@ def load_brain_datasets(data_root, dataset_name):
     try:
         from rep_scripts.utils import prepare_Brain_dataset
     except Exception as exc:
-        if dataset_name == "ADNI":
+        if dataset_name in {"ADNI", "ADHD200"}:
             raise RuntimeError(
-                "ADNI contract requires rep_scripts.utils.prepare_Brain_dataset; "
-                "fix its import dependencies before running."
+                "{name} contract requires rep_scripts.utils.prepare_Brain_dataset; "
+                "fix its import dependencies before running.".format(name=dataset_name)
             ) from exc
         print(
             "Warning: rep_scripts.utils import failed; using fallback loader. "
