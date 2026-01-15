@@ -138,6 +138,23 @@ def resolve_embed_paths(dataset_name, split_seed):
         )
         if os.path.isdir(default_root) and os.path.isfile(default_splits):
             return default_root, default_splits
+    if dataset_upper == "LEMON_FMRI":
+        default_root = os.path.join(
+            PROJECT_ROOT,
+            "Brain-Harmony",
+            "experiments",
+            "stage0_embed",
+            "downstream_embed",
+            "LEMON_fMRI",
+        )
+        default_splits = os.path.join(
+            PROJECT_ROOT,
+            "results",
+            "LEMON_fMRI",
+            f"lemon_fmri_splits_seed{split_seed}.json",
+        )
+        if os.path.isdir(default_root) and os.path.isfile(default_splits):
+            return default_root, default_splits
 
     return "", ""
 
