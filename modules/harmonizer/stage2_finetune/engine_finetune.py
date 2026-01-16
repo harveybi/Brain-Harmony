@@ -22,6 +22,22 @@ def compute_balanced_accuracy(y_true, y_pred):
     return balanced_accuracy_score(y_true_np, y_pred_np)
 
 
+def compute_mae(y_true, y_pred):
+    y_true_np = np.asarray(y_true, dtype=float)
+    y_pred_np = np.asarray(y_pred, dtype=float)
+    if y_true_np.size == 0 or y_pred_np.size == 0:
+        return 0.0
+    return float(np.mean(np.abs(y_true_np - y_pred_np)))
+
+
+def compute_mse(y_true, y_pred):
+    y_true_np = np.asarray(y_true, dtype=float)
+    y_pred_np = np.asarray(y_pred, dtype=float)
+    if y_true_np.size == 0 or y_pred_np.size == 0:
+        return 0.0
+    return float(np.mean((y_true_np - y_pred_np) ** 2))
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -114,8 +130,11 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, dataset_name):
-    criterion = torch.nn.CrossEntropyLoss()
+def evaluate(data_loader, model, device, dataset_name, task="classification"):
+    if task == "regression":
+        criterion = torch.nn.MSELoss()
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = "Test:"
@@ -149,6 +168,12 @@ def evaluate(data_loader, model, device, dataset_name):
             else:
                 output = outputs
 
+            if task == "regression":
+                output = output.squeeze(-1)
+                target = target.to(output.dtype)
+                if target.shape != output.shape:
+                    target = target.view_as(output)
+
             try:
                 loss = criterion(output, target)
             except:
@@ -166,23 +191,33 @@ def evaluate(data_loader, model, device, dataset_name):
             print(f"Saved attn_list to attn_list_batch_{batch_idx}.pt")
             batch_idx += 1
 
-        acc1 = accuracy(output, target, topk=(1,))[0]
-
-        predict = np.argmax(output.detach().cpu().numpy(), axis=1)
-
-        target_np = target.detach().cpu().numpy()
-        if dataset_name in multiclass_datasets or dataset_name == "PPMI":
-            f1score = f1_score(target_np, predict, average="weighted", zero_division=0)
+        if task == "regression":
+            preds = output.detach().cpu().numpy()
+            target_np = target.detach().cpu().numpy()
+            batch_size = images.shape[0]
+            metric_logger.update(loss=loss.item())
+            all_preds.append(preds)
+            all_targets.append(target_np)
         else:
-            f1score = f1_score(target_np, predict, zero_division=0)
+            acc1 = accuracy(output, target, topk=(1,))[0]
 
-        batch_size = images.shape[0]
-        metric_logger.update(loss=loss.item())
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["f1score"].update(f1score, n=batch_size)
+            predict = np.argmax(output.detach().cpu().numpy(), axis=1)
 
-        all_preds.append(predict)
-        all_targets.append(target_np)
+            target_np = target.detach().cpu().numpy()
+            if dataset_name in multiclass_datasets or dataset_name == "PPMI":
+                f1score = f1_score(
+                    target_np, predict, average="weighted", zero_division=0
+                )
+            else:
+                f1score = f1_score(target_np, predict, zero_division=0)
+
+            batch_size = images.shape[0]
+            metric_logger.update(loss=loss.item())
+            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["f1score"].update(f1score, n=batch_size)
+
+            all_preds.append(predict)
+            all_targets.append(target_np)
     metric_logger.synchronize_between_processes()
 
     y_pred = np.concatenate(all_preds) if all_preds else np.array([])
@@ -213,6 +248,17 @@ def evaluate(data_loader, model, device, dataset_name):
 
     y_true = _gather_concat(y_true)
     y_pred = _gather_concat(y_pred)
+
+    if task == "regression":
+        mae = compute_mae(y_true, y_pred)
+        mse = compute_mse(y_true, y_pred)
+        print(
+            f"* MAE {mae:.3f} MSE {mse:.3f} loss {metric_logger.loss.global_avg:.3f}"
+        )
+        metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+        metrics["mae"] = mae
+        metrics["mse"] = mse
+        return metrics
 
     if y_true.size == 0 or y_pred.size == 0:
         acc1 = 0.0

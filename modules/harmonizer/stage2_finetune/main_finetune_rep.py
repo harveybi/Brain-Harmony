@@ -76,6 +76,13 @@ DATASET_CONFIG = {
         "nb_classes": 5,
         "metric_key": "kappa",
     },
+    "CamCAN_fMRI_Rest": {
+        "loader_name": "CamCAN_fMRI_Rest",
+        "task": "regression",
+        "nb_classes": 1,
+        "metric_key": "mae",
+        "metric_mode": "min",
+    },
 }
 
 DEFAULT_ADAPT_CONFIG = {
@@ -172,6 +179,23 @@ def resolve_embed_paths(dataset_name, split_seed):
         )
         if os.path.isdir(default_root) and os.path.isfile(default_splits):
             return default_root, default_splits
+    if dataset_upper == "CAMCAN_FMRI_REST":
+        default_root = os.path.join(
+            PROJECT_ROOT,
+            "Brain-Harmony",
+            "experiments",
+            "stage0_embed",
+            "downstream_embed",
+            "CamCAN_fMRI_Rest",
+        )
+        default_splits = os.path.join(
+            PROJECT_ROOT,
+            "results",
+            "CamCAN_fMRI_Rest",
+            f"camcan_fmri_rest_splits_seed{split_seed}.json",
+        )
+        if os.path.isdir(default_root) and os.path.isfile(default_splits):
+            return default_root, default_splits
 
     return "", ""
 
@@ -236,9 +260,10 @@ def adapt_adni_signal(
 
 
 class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset, adapt_config=None):
+    def __init__(self, base_dataset, adapt_config=None, task="classification"):
         self.base_dataset = base_dataset
         self.adapt_config = adapt_config or DEFAULT_ADAPT_CONFIG
+        self.task = task
 
     def __len__(self):
         return len(self.base_dataset)
@@ -246,11 +271,19 @@ class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         signal, target = self.base_dataset[idx]
         tokens, attn_mask = adapt_adni_signal(signal, **self.adapt_config)
-        target_tensor = torch.as_tensor(target)
-        if target_tensor.numel() > 1:
-            target = int(torch.argmax(target_tensor).item())
+        target_tensor = torch.as_tensor(target).detach().cpu()
+        if self.task == "regression":
+            flat = target_tensor.flatten().to(torch.float32)
+            if flat.numel() != 1:
+                raise ValueError(
+                    f"Expected scalar regression target, got {flat.numel()} values."
+                )
+            target = float(flat.item())
         else:
-            target = int(target_tensor.item())
+            if target_tensor.numel() > 1:
+                target = int(torch.argmax(target_tensor).item())
+            else:
+                target = int(target_tensor.item())
         sample_id = str(idx)
         if hasattr(self.base_dataset, "keys"):
             key_info = self.base_dataset.keys[idx]
@@ -258,12 +291,40 @@ class BrainSignalFinetuneDataset(torch.utils.data.Dataset):
         return tokens, target, attn_mask, sample_id
 
 
-def collate_brain_signals(batch):
+def collate_brain_signals(batch, task="classification"):
     tokens, targets, attn_masks, sample_ids = zip(*batch)
     tokens = torch.stack(tokens, dim=0)
-    targets = torch.tensor(targets, dtype=torch.long)
+    if task == "regression":
+        targets = torch.tensor(targets, dtype=torch.float32).view(-1, 1)
+    else:
+        targets = torch.tensor(targets, dtype=torch.long)
     attn_masks = torch.stack(attn_masks, dim=0)
     return tokens, targets, attn_masks, list(sample_ids)
+
+
+def make_collate_brain_signals(task):
+    def _collate(batch):
+        return collate_brain_signals(batch, task=task)
+
+    return _collate
+
+
+def collate_embed_samples(batch, task="classification"):
+    samples, targets, attn_masks = zip(*batch)
+    samples = torch.stack(samples, dim=0)
+    attn_masks = torch.stack(attn_masks, dim=0)
+    if task == "regression":
+        targets = torch.tensor(targets, dtype=torch.float32).view(-1, 1)
+    else:
+        targets = torch.tensor(targets, dtype=torch.long)
+    return samples, targets, attn_masks
+
+
+def make_collate_embed_samples(task):
+    def _collate(batch):
+        return collate_embed_samples(batch, task=task)
+
+    return _collate
 
 
 def resolve_sample_id(base_dataset, idx):
@@ -422,6 +483,66 @@ def validate_multiclass_label_contract(
     return counts
 
 
+def validate_regression_label_contract(base_dataset, split_name, dataset_name):
+    values = []
+    invalid = []
+
+    for idx in range(len(base_dataset)):
+        _, target = base_dataset[idx]
+        try:
+            target_tensor = torch.as_tensor(target).detach().cpu()
+        except Exception:
+            invalid.append((resolve_sample_id(base_dataset, idx), repr(target)))
+            continue
+
+        if target_tensor.numel() == 0:
+            invalid.append((resolve_sample_id(base_dataset, idx), []))
+            continue
+
+        flat = target_tensor.flatten().to(torch.float32)
+        if flat.numel() != 1:
+            invalid.append(
+                (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+            )
+            continue
+
+        value = float(flat.item())
+        if not np.isfinite(value):
+            invalid.append(
+                (resolve_sample_id(base_dataset, idx), _preview_target(target, flat))
+            )
+            continue
+        values.append(value)
+
+    if invalid:
+        samples = ", ".join(f"{sid}={val}" for sid, val in invalid[:5])
+        raise ValueError(
+            f"{dataset_name} regression label contract failed for {split_name}. "
+            "Expected a single finite float target. "
+            f"Examples: {samples}"
+        )
+
+    if not values:
+        raise ValueError(
+            f"{dataset_name} regression label contract failed for {split_name}: "
+            "no labels found."
+        )
+
+    min_value = float(np.min(values))
+    max_value = float(np.max(values))
+    mean_value = float(np.mean(values))
+    print(
+        f"{dataset_name} label stats ({split_name}): "
+        f"min={min_value:.4f} max={max_value:.4f} mean={mean_value:.4f}"
+    )
+    return {
+        "min": min_value,
+        "max": max_value,
+        "mean": mean_value,
+        "count": len(values),
+    }
+
+
 def validate_label_cardinality(counts, split_name, dataset_name, nb_classes):
     missing = [cls for cls, count in counts.items() if count == 0]
     if missing:
@@ -459,6 +580,8 @@ def validate_dataset_splits(data_root, dataset_cfg, dataset_name, splits):
             validate_label_cardinality(
                 counts, split_name, dataset_name, dataset_cfg["nb_classes"]
             )
+        elif dataset_cfg["task"] == "regression":
+            validate_regression_label_contract(base_dataset, split_name, dataset_name)
 
 def resolve_git_commit(repo_root):
     try:
@@ -478,6 +601,14 @@ def _select_metric(metric_name, y_true, y_pred):
         return balanced_accuracy_score(y_true, y_pred)
     if metric_name == "kappa":
         return cohen_kappa_score(y_true, y_pred)
+    if metric_name == "mae":
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        return float(np.mean(np.abs(y_true - y_pred)))
+    if metric_name == "mse":
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        return float(np.mean((y_true - y_pred) ** 2))
     raise ValueError(f"Unsupported metric for run artifacts: {metric_name}")
 
 
@@ -597,12 +728,12 @@ def load_training_deps():
 
 
 @torch.no_grad()
-def collect_predictions(data_loader, model, device):
+def collect_predictions(data_loader, model, device, task="classification"):
     model.eval()
     all_preds = []
     all_targets = []
     all_ids = []
-    all_probs = []
+    all_probs = [] if task != "regression" else None
     offset = 0
 
     for batch in data_loader:
@@ -627,18 +758,24 @@ def collect_predictions(data_loader, model, device):
         with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
             outputs = model(samples, attn_mask)
 
-        if outputs.ndim == 1:
-            outputs = outputs.unsqueeze(-1)
-        probs = torch.softmax(outputs, dim=-1)
-        preds = torch.argmax(probs, dim=-1)
-        all_preds.append(preds.cpu().numpy())
-        all_targets.append(targets.cpu().numpy())
-        all_ids.extend(sample_ids)
-        all_probs.append(probs.detach().cpu().numpy())
+        if task == "regression":
+            outputs = outputs.squeeze(-1)
+            all_preds.append(outputs.detach().cpu().numpy())
+            all_targets.append(targets.detach().cpu().numpy())
+            all_ids.extend(sample_ids)
+        else:
+            if outputs.ndim == 1:
+                outputs = outputs.unsqueeze(-1)
+            probs = torch.softmax(outputs, dim=-1)
+            preds = torch.argmax(probs, dim=-1)
+            all_preds.append(preds.cpu().numpy())
+            all_targets.append(targets.cpu().numpy())
+            all_ids.extend(sample_ids)
+            all_probs.append(probs.detach().cpu().numpy())
 
     y_pred = np.concatenate(all_preds)
     y_true = np.concatenate(all_targets)
-    prob = np.concatenate(all_probs)
+    prob = np.concatenate(all_probs) if all_probs is not None else None
 
     return y_true, y_pred, prob, all_ids
 
@@ -653,6 +790,7 @@ def write_run_artifact(
     metric_value,
     predictions,
     git_commit,
+    metrics=None,
 ):
     payload = {
         "dataset_name": dataset_name,
@@ -663,6 +801,8 @@ def write_run_artifact(
         "predictions": predictions,
         "git_commit": git_commit,
     }
+    if metrics is not None:
+        payload["metrics"] = metrics
     path = os.path.join(output_dir, f"run-{run_id}.{split}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -678,6 +818,7 @@ def run_overfit_sanity(
     args,
     tolerance,
     train_one_epoch,
+    task,
 ):
     model.train()
     batch = next(iter(data_loader))
@@ -693,6 +834,11 @@ def run_overfit_sanity(
 
     with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
         outputs = model(samples, attn_mask)
+        if task == "regression":
+            outputs = outputs.squeeze(-1)
+            targets = targets.to(outputs.dtype)
+            if targets.shape != outputs.shape:
+                targets = targets.view_as(outputs)
         initial_loss = criterion(outputs, targets).item()
 
     for _ in range(args.overfit_epochs):
@@ -712,18 +858,37 @@ def run_overfit_sanity(
 
     with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
         outputs = model(samples, attn_mask)
+        if task == "regression":
+            outputs = outputs.squeeze(-1)
+            targets = targets.to(outputs.dtype)
+            if targets.shape != outputs.shape:
+                targets = targets.view_as(outputs)
         final_loss = criterion(outputs, targets).item()
 
-    probs = torch.softmax(outputs, dim=-1)
-    preds = torch.argmax(probs, dim=-1).cpu().numpy()
-    targets_np = targets.cpu().numpy()
-    bac = balanced_accuracy_score(targets_np, preds)
+    if task == "regression":
+        preds = outputs.detach().cpu().numpy()
+        targets_np = targets.detach().cpu().numpy()
+        mae = float(np.mean(np.abs(targets_np - preds)))
+        print(
+            "Overfit sanity: initial_loss={:.6f} final_loss={:.6f} mae={:.4f}".format(
+                initial_loss, final_loss, mae
+            )
+        )
+        if not np.isfinite(mae):
+            raise RuntimeError("Overfit sanity failed: MAE is NaN/inf.")
+    else:
+        probs = torch.softmax(outputs, dim=-1)
+        preds = torch.argmax(probs, dim=-1).cpu().numpy()
+        targets_np = targets.cpu().numpy()
+        bac = balanced_accuracy_score(targets_np, preds)
 
-    print(
-        f"Overfit sanity: initial_loss={initial_loss:.6f} final_loss={final_loss:.6f} bac={bac:.4f}"
-    )
-    if not np.isfinite(bac):
-        raise RuntimeError("Overfit sanity failed: balanced accuracy is NaN/inf.")
+        print(
+            "Overfit sanity: initial_loss={:.6f} final_loss={:.6f} bac={:.4f}".format(
+                initial_loss, final_loss, bac
+            )
+        )
+        if not np.isfinite(bac):
+            raise RuntimeError("Overfit sanity failed: balanced accuracy is NaN/inf.")
     if final_loss > (initial_loss - tolerance):
         raise RuntimeError(
             "Overfit sanity failed: loss did not decrease within tolerance."
@@ -732,7 +897,7 @@ def run_overfit_sanity(
 
 def get_args_parser():
     parser = argparse.ArgumentParser(
-        "MAE fine-tuning for image classification", add_help=False
+        "MAE fine-tuning for downstream tasks", add_help=False
     )
     parser.add_argument(
         "--batch_size",
@@ -1006,12 +1171,21 @@ def main(args):
 
     cudnn.benchmark = True
     dataset_cfg = DATASET_CONFIG.get(args.dataset_name)
+    dataset_task = dataset_cfg["task"] if dataset_cfg is not None else "classification"
     train_base = None
     using_embeddings = False
     embed_root = ""
     embed_splits = ""
 
     if dataset_cfg is not None:
+        if args.nb_classes == 1000:
+            args.nb_classes = dataset_cfg["nb_classes"]
+        elif args.nb_classes != dataset_cfg["nb_classes"]:
+            print(
+                "Warning: nb_classes mismatch for {dataset}. Using nb_classes={nb}.".format(
+                    dataset=args.dataset_name, nb=args.nb_classes
+                )
+            )
         embed_root, embed_splits = resolve_embed_paths(
             args.dataset_name, args.split_seed
         )
@@ -1030,20 +1204,15 @@ def main(args):
             dataset_test = GenerateEmbedDataset_downstream(
                 root_dir=embed_root, splits_file=embed_splits, split="test"
             )
-            collate_fn = None
+            if dataset_task == "regression":
+                collate_fn = make_collate_embed_samples(dataset_task)
+            else:
+                collate_fn = None
             using_embeddings = True
         else:
             if not args.data_path:
                 raise ValueError(
                     f"{args.dataset_name} requires --data_path or DATA_ROOT to be set."
-                )
-            if args.nb_classes == 1000:
-                args.nb_classes = dataset_cfg["nb_classes"]
-            elif args.nb_classes != dataset_cfg["nb_classes"]:
-                print(
-                    "Warning: nb_classes mismatch for {dataset}. Using nb_classes={nb}.".format(
-                        dataset=args.dataset_name, nb=args.nb_classes
-                    )
                 )
             train_base, test_base, val_base = load_brain_datasets(
                 args.data_path, dataset_cfg["loader_name"]
@@ -1058,10 +1227,12 @@ def main(args):
                     ("test", test_base),
                 ],
             )
-            dataset_train = BrainSignalFinetuneDataset(train_base)
-            dataset_val = BrainSignalFinetuneDataset(val_base)
-            dataset_test = BrainSignalFinetuneDataset(test_base)
-            collate_fn = collate_brain_signals
+            dataset_train = BrainSignalFinetuneDataset(
+                train_base, task=dataset_task
+            )
+            dataset_val = BrainSignalFinetuneDataset(val_base, task=dataset_task)
+            dataset_test = BrainSignalFinetuneDataset(test_base, task=dataset_task)
+            collate_fn = make_collate_brain_signals(dataset_task)
     elif args.dataset_name == "AbideI":
         root_dir = "experiments/stage0_embed/downstream_embed/AbideI"
         splits_file = f"/scratch/Projects/project_312_HelenZhou/ABIDE1_fMRI_T1/data_splits_seed{args.split_seed}.json"
@@ -1243,6 +1414,9 @@ def main(args):
 
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0.0 or args.cutmix_minmax is not None
+    if dataset_task == "regression" and mixup_active:
+        print("Warning: mixup/cutmix disabled for regression tasks.")
+        mixup_active = False
     if mixup_active:
         print("Mixup is activated!")
         mixup_fn = Mixup(
@@ -1358,7 +1532,9 @@ def main(args):
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 
-    if mixup_fn is not None:
+    if dataset_task == "regression":
+        criterion = torch.nn.MSELoss()
+    elif mixup_fn is not None:
         criterion = SoftTargetCrossEntropy()
     elif args.smoothing > 0.0:
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
@@ -1375,10 +1551,19 @@ def main(args):
     )
 
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device, args.dataset_name)
-        print(
-            f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}%"
+        test_stats = evaluate(
+            data_loader_val, model, device, args.dataset_name, task=dataset_task
         )
+        if dataset_task == "regression":
+            print(
+                "Regression metrics on val split (n={}): mae={:.4f} mse={:.4f}".format(
+                    len(dataset_val), test_stats["mae"], test_stats["mse"]
+                )
+            )
+        else:
+            print(
+                f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}%"
+            )
         exit(0)
 
     if args.overfit_batches > 0:
@@ -1404,15 +1589,19 @@ def main(args):
             args,
             args.overfit_tolerance,
             train_one_epoch,
+            dataset_task,
         )
         return
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_metric = -float("inf")
     metric_key = (
         dataset_cfg["metric_key"] if dataset_cfg is not None else "f1score"
     )
+    metric_mode = dataset_cfg.get("metric_mode", "max") if dataset_cfg else "max"
+    if metric_mode not in {"max", "min"}:
+        raise ValueError(f"Unsupported metric_mode: {metric_mode}")
+    best_metric = float("inf") if metric_mode == "min" else -float("inf")
     for epoch in range(args.start_epoch, args.epochs):
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -1450,22 +1639,47 @@ def main(args):
             )
         )
 
-        test_stats = evaluate(data_loader_val, model, device, args.dataset_name)
-        val_kappa = test_stats.get("kappa")
-        val_kappa_msg = f" kappa={val_kappa:.3f}" if val_kappa is not None else ""
-        print(
-            f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
+        test_stats = evaluate(
+            data_loader_val, model, device, args.dataset_name, task=dataset_task
         )
+        if dataset_task == "regression":
+            print(
+                "Regression metrics on val split (n={}): mae={:.4f} mse={:.4f}".format(
+                    len(dataset_val), test_stats["mae"], test_stats["mse"]
+                )
+            )
+        else:
+            val_kappa = test_stats.get("kappa")
+            val_kappa_msg = f" kappa={val_kappa:.3f}" if val_kappa is not None else ""
+            print(
+                f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
+            )
 
-        test_test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
-        test_kappa = test_test_stats.get("kappa")
-        test_kappa_msg = f" kappa={test_kappa:.3f}" if test_kappa is not None else ""
-        print(
-            f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}{test_kappa_msg}"
+        test_test_stats = evaluate(
+            data_loader_test, model, device, args.dataset_name, task=dataset_task
         )
+        if dataset_task == "regression":
+            print(
+                "Regression metrics on test split (n={}): mae={:.4f} mse={:.4f}".format(
+                    len(dataset_test), test_test_stats["mae"], test_test_stats["mse"]
+                )
+            )
+        else:
+            test_kappa = test_test_stats.get("kappa")
+            test_kappa_msg = (
+                f" kappa={test_kappa:.3f}" if test_kappa is not None else ""
+            )
+            print(
+                f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}{test_kappa_msg}"
+            )
 
         if args.output_dir:
-            if test_stats[metric_key] >= max_metric:
+            is_better = (
+                test_stats[metric_key] <= best_metric
+                if metric_mode == "min"
+                else test_stats[metric_key] >= best_metric
+            )
+            if is_better:
                 val_stats = test_stats
                 misc.save_model(
                     args=args,
@@ -1486,28 +1700,42 @@ def main(args):
                     epoch=epoch,
                     latest=True,
                 )
-        max_metric = max(max_metric, test_stats[metric_key])
-        print(f"Max {metric_key}: {max_metric:.4f}")
+        if metric_mode == "min":
+            best_metric = min(best_metric, test_stats[metric_key])
+        else:
+            best_metric = max(best_metric, test_stats[metric_key])
+        print(f"Best {metric_key}: {best_metric:.4f}")
 
         if log_writer is not None:
-            log_writer.add_scalar("perf/test_acc1", test_stats["acc1"], epoch)
-            log_writer.add_scalar("perf/test_f1score", test_stats["f1score"], epoch)
-            log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
-            log_writer.add_scalar("perf/test_bac", test_stats["bac"], epoch)
-            if "kappa" in test_stats:
-                log_writer.add_scalar("perf/test_kappa", test_stats["kappa"], epoch)
-            log_writer.add_scalar("val/acc1", test_stats["acc1"], epoch)
-            log_writer.add_scalar("val/f1score", test_stats["f1score"], epoch)
-            log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
-            log_writer.add_scalar("val/bac", test_stats["bac"], epoch)
-            if "kappa" in test_stats:
-                log_writer.add_scalar("val/kappa", test_stats["kappa"], epoch)
-            log_writer.add_scalar("test/acc1", test_test_stats["acc1"], epoch)
-            log_writer.add_scalar("test/f1score", test_test_stats["f1score"], epoch)
-            log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
-            log_writer.add_scalar("test/bac", test_test_stats["bac"], epoch)
-            if "kappa" in test_test_stats:
-                log_writer.add_scalar("test/kappa", test_test_stats["kappa"], epoch)
+            if dataset_task == "regression":
+                log_writer.add_scalar("perf/test_mae", test_stats["mae"], epoch)
+                log_writer.add_scalar("perf/test_mse", test_stats["mse"], epoch)
+                log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
+                log_writer.add_scalar("val/mae", test_stats["mae"], epoch)
+                log_writer.add_scalar("val/mse", test_stats["mse"], epoch)
+                log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
+                log_writer.add_scalar("test/mae", test_test_stats["mae"], epoch)
+                log_writer.add_scalar("test/mse", test_test_stats["mse"], epoch)
+                log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
+            else:
+                log_writer.add_scalar("perf/test_acc1", test_stats["acc1"], epoch)
+                log_writer.add_scalar("perf/test_f1score", test_stats["f1score"], epoch)
+                log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
+                log_writer.add_scalar("perf/test_bac", test_stats["bac"], epoch)
+                if "kappa" in test_stats:
+                    log_writer.add_scalar("perf/test_kappa", test_stats["kappa"], epoch)
+                log_writer.add_scalar("val/acc1", test_stats["acc1"], epoch)
+                log_writer.add_scalar("val/f1score", test_stats["f1score"], epoch)
+                log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
+                log_writer.add_scalar("val/bac", test_stats["bac"], epoch)
+                if "kappa" in test_stats:
+                    log_writer.add_scalar("val/kappa", test_stats["kappa"], epoch)
+                log_writer.add_scalar("test/acc1", test_test_stats["acc1"], epoch)
+                log_writer.add_scalar("test/f1score", test_test_stats["f1score"], epoch)
+                log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
+                log_writer.add_scalar("test/bac", test_test_stats["bac"], epoch)
+                if "kappa" in test_test_stats:
+                    log_writer.add_scalar("test/kappa", test_test_stats["kappa"], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
@@ -1535,22 +1763,42 @@ def main(args):
         optimizer=optimizer,
         loss_scaler=loss_scaler,
     )
-    test_stats = evaluate(data_loader_test, model, device, args.dataset_name)
-    print(
-        f"Accuracy of the network on the {len(dataset_test)} test images: {test_stats['acc1']:.1f}% bac={test_stats['bac']:.3f}"
+    test_stats = evaluate(
+        data_loader_test, model, device, args.dataset_name, task=dataset_task
     )
+    if dataset_task == "regression":
+        print(
+            "Regression metrics on test split (n={}): mae={:.4f} mse={:.4f}".format(
+                len(dataset_test), test_stats["mae"], test_stats["mse"]
+            )
+        )
+    else:
+        print(
+            f"Accuracy of the network on the {len(dataset_test)} test images: {test_stats['acc1']:.1f}% bac={test_stats['bac']:.3f}"
+        )
 
-    header = [
-        "name",
-        "val_loss",
-        "val_acc1",
-        "val_f1score",
-        "val_bac",
-        "test_loss",
-        "test_acc1",
-        "test_f1score",
-        "test_bac",
-    ]
+    if dataset_task == "regression":
+        header = [
+            "name",
+            "val_loss",
+            "val_mae",
+            "val_mse",
+            "test_loss",
+            "test_mae",
+            "test_mse",
+        ]
+    else:
+        header = [
+            "name",
+            "val_loss",
+            "val_acc1",
+            "val_f1score",
+            "val_bac",
+            "test_loss",
+            "test_acc1",
+            "test_f1score",
+            "test_bac",
+        ]
     csv_file = os.path.join(args.output_dir, "results.csv")
     write_header = not os.path.exists(csv_file)
 
@@ -1561,85 +1809,137 @@ def main(args):
         writer = csv.writer(f)
         if write_header:
             writer.writerow(header)
-        writer.writerow(
-            [
-                row_name,
-                val_stats["loss"],
-                val_stats["acc1"],
-                val_stats["f1score"],
-                val_stats["bac"],
-                test_stats["loss"],
-                test_stats["acc1"],
-                test_stats["f1score"],
-                test_stats["bac"],
-            ]
-        )
+        if dataset_task == "regression":
+            writer.writerow(
+                [
+                    row_name,
+                    val_stats["loss"],
+                    val_stats["mae"],
+                    val_stats["mse"],
+                    test_stats["loss"],
+                    test_stats["mae"],
+                    test_stats["mse"],
+                ]
+            )
+        else:
+            writer.writerow(
+                [
+                    row_name,
+                    val_stats["loss"],
+                    val_stats["acc1"],
+                    val_stats["f1score"],
+                    val_stats["bac"],
+                    test_stats["loss"],
+                    test_stats["acc1"],
+                    test_stats["f1score"],
+                    test_stats["bac"],
+                ]
+            )
         fcntl.flock(f, fcntl.LOCK_UN)
 
-    if (
-        args.output_dir
-        and dataset_cfg is not None
-        and dataset_cfg["task"] in {"binary", "multiclass"}
-    ):
+    if args.output_dir and dataset_cfg is not None:
         run_id = args.run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         git_commit = resolve_git_commit(PROJECT_ROOT)
         metric_name = dataset_cfg["metric_key"]
 
-        train_true, train_pred, train_prob, train_ids = collect_predictions(
-            data_loader_train, model, device
-        )
-        val_true, val_pred, val_prob, val_ids = collect_predictions(
-            data_loader_val, model, device
-        )
-        test_true, test_pred, test_prob, test_ids = collect_predictions(
-            data_loader_test, model, device
-        )
-
-        splits = [
-            ("train", train_true, train_pred, train_prob, train_ids),
-            ("val", val_true, val_pred, val_prob, val_ids),
-            ("test", test_true, test_pred, test_prob, test_ids),
-        ]
-
-        def _select_probabilities(probabilities, task):
-            prob_array = np.asarray(probabilities)
-            if task == "binary":
-                if prob_array.ndim == 1:
-                    return prob_array
-                if prob_array.shape[1] == 1:
-                    return prob_array[:, 0]
-                return prob_array[:, 1]
-            return prob_array
-
-        for split_name, y_true, y_pred, prob, ids in splits:
-            y_true = np.asarray(y_true).reshape(-1)
-            y_pred = np.asarray(y_pred).reshape(-1)
-            prob_values = _select_probabilities(prob, dataset_cfg["task"])
-            metric_value = _select_metric(metric_name, y_true, y_pred)
-            predictions = [
-                {
-                    "id": sample_id,
-                    "y_true": int(y_t),
-                    "y_pred": int(y_p),
-                    "prob": (
-                        [float(value) for value in np.asarray(p).tolist()]
-                        if dataset_cfg["task"] == "multiclass"
-                        else float(p)
-                    ),
-                }
-                for sample_id, y_t, y_p, p in zip(ids, y_true, y_pred, prob_values)
-            ]
-            write_run_artifact(
-                args.output_dir,
-                run_id,
-                split_name,
-                args.dataset_name,
-                args.seed,
-                metric_name,
-                metric_value,
-                predictions,
-                git_commit,
+        if dataset_cfg["task"] in {"binary", "multiclass"}:
+            train_true, train_pred, train_prob, train_ids = collect_predictions(
+                data_loader_train, model, device, task=dataset_cfg["task"]
             )
+            val_true, val_pred, val_prob, val_ids = collect_predictions(
+                data_loader_val, model, device, task=dataset_cfg["task"]
+            )
+            test_true, test_pred, test_prob, test_ids = collect_predictions(
+                data_loader_test, model, device, task=dataset_cfg["task"]
+            )
+
+            splits = [
+                ("train", train_true, train_pred, train_prob, train_ids),
+                ("val", val_true, val_pred, val_prob, val_ids),
+                ("test", test_true, test_pred, test_prob, test_ids),
+            ]
+
+            def _select_probabilities(probabilities, task):
+                prob_array = np.asarray(probabilities)
+                if task == "binary":
+                    if prob_array.ndim == 1:
+                        return prob_array
+                    if prob_array.shape[1] == 1:
+                        return prob_array[:, 0]
+                    return prob_array[:, 1]
+                return prob_array
+
+            for split_name, y_true, y_pred, prob, ids in splits:
+                y_true = np.asarray(y_true).reshape(-1)
+                y_pred = np.asarray(y_pred).reshape(-1)
+                prob_values = _select_probabilities(prob, dataset_cfg["task"])
+                metric_value = _select_metric(metric_name, y_true, y_pred)
+                predictions = [
+                    {
+                        "id": sample_id,
+                        "y_true": int(y_t),
+                        "y_pred": int(y_p),
+                        "prob": (
+                            [float(value) for value in np.asarray(p).tolist()]
+                            if dataset_cfg["task"] == "multiclass"
+                            else float(p)
+                        ),
+                    }
+                    for sample_id, y_t, y_p, p in zip(ids, y_true, y_pred, prob_values)
+                ]
+                write_run_artifact(
+                    args.output_dir,
+                    run_id,
+                    split_name,
+                    args.dataset_name,
+                    args.seed,
+                    metric_name,
+                    metric_value,
+                    predictions,
+                    git_commit,
+                )
+        elif dataset_cfg["task"] == "regression":
+            train_true, train_pred, _, train_ids = collect_predictions(
+                data_loader_train, model, device, task="regression"
+            )
+            val_true, val_pred, _, val_ids = collect_predictions(
+                data_loader_val, model, device, task="regression"
+            )
+            test_true, test_pred, _, test_ids = collect_predictions(
+                data_loader_test, model, device, task="regression"
+            )
+
+            splits = [
+                ("train", train_true, train_pred, train_ids),
+                ("val", val_true, val_pred, val_ids),
+                ("test", test_true, test_pred, test_ids),
+            ]
+
+            for split_name, y_true, y_pred, ids in splits:
+                y_true = np.asarray(y_true).reshape(-1)
+                y_pred = np.asarray(y_pred).reshape(-1)
+                mae_value = _select_metric("mae", y_true, y_pred)
+                mse_value = _select_metric("mse", y_true, y_pred)
+                predictions = [
+                    {
+                        "id": sample_id,
+                        "y_true": float(y_t),
+                        "y_pred": float(y_p),
+                    }
+                    for sample_id, y_t, y_p in zip(ids, y_true, y_pred)
+                ]
+                write_run_artifact(
+                    args.output_dir,
+                    run_id,
+                    split_name,
+                    args.dataset_name,
+                    args.seed,
+                    metric_name,
+                    mae_value,
+                    predictions,
+                    git_commit,
+                    metrics={"mae": float(mae_value), "mse": float(mse_value)},
+                )
 
 
 if __name__ == "__main__":
