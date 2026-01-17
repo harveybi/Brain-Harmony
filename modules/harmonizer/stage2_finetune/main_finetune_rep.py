@@ -605,10 +605,20 @@ def _select_metric(metric_name, y_true, y_pred):
         y_true = np.asarray(y_true, dtype=float)
         y_pred = np.asarray(y_pred, dtype=float)
         return float(np.mean(np.abs(y_true - y_pred)))
-    if metric_name == "mse":
+    if metric_name == "rmse":
         y_true = np.asarray(y_true, dtype=float)
         y_pred = np.asarray(y_pred, dtype=float)
-        return float(np.mean((y_true - y_pred) ** 2))
+        return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    if metric_name == "r2":
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        if y_true.size == 0 or y_pred.size == 0:
+            return 0.0
+        ss_res = float(np.sum((y_true - y_pred) ** 2))
+        ss_tot = float(np.sum((y_true - float(np.mean(y_true))) ** 2))
+        if ss_tot == 0.0:
+            return 0.0
+        return 1.0 - ss_res / ss_tot
     raise ValueError(f"Unsupported metric for run artifacts: {metric_name}")
 
 
@@ -1556,8 +1566,11 @@ def main(args):
         )
         if dataset_task == "regression":
             print(
-                "Regression metrics on val split (n={}): mae={:.4f} mse={:.4f}".format(
-                    len(dataset_val), test_stats["mae"], test_stats["mse"]
+                "Regression metrics on val split (n={}): mae={:.4f} rmse={:.4f} r2={:.4f}".format(
+                    len(dataset_val),
+                    test_stats["mae"],
+                    test_stats["rmse"],
+                    test_stats["r2"],
                 )
             )
         else:
@@ -1644,8 +1657,11 @@ def main(args):
         )
         if dataset_task == "regression":
             print(
-                "Regression metrics on val split (n={}): mae={:.4f} mse={:.4f}".format(
-                    len(dataset_val), test_stats["mae"], test_stats["mse"]
+                "Regression metrics on val split (n={}): mae={:.4f} rmse={:.4f} r2={:.4f}".format(
+                    len(dataset_val),
+                    test_stats["mae"],
+                    test_stats["rmse"],
+                    test_stats["r2"],
                 )
             )
         else:
@@ -1691,10 +1707,12 @@ def main(args):
         if log_writer is not None:
             if dataset_task == "regression":
                 log_writer.add_scalar("perf/test_mae", test_stats["mae"], epoch)
-                log_writer.add_scalar("perf/test_mse", test_stats["mse"], epoch)
+                log_writer.add_scalar("perf/test_rmse", test_stats["rmse"], epoch)
+                log_writer.add_scalar("perf/test_r2", test_stats["r2"], epoch)
                 log_writer.add_scalar("perf/test_loss", test_stats["loss"], epoch)
                 log_writer.add_scalar("val/mae", test_stats["mae"], epoch)
-                log_writer.add_scalar("val/mse", test_stats["mse"], epoch)
+                log_writer.add_scalar("val/rmse", test_stats["rmse"], epoch)
+                log_writer.add_scalar("val/r2", test_stats["r2"], epoch)
                 log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
             else:
                 log_writer.add_scalar("perf/test_acc1", test_stats["acc1"], epoch)
@@ -1741,8 +1759,11 @@ def main(args):
     )
     if dataset_task == "regression":
         print(
-            "Regression metrics on test split (n={}): mae={:.4f} mse={:.4f}".format(
-                len(dataset_test), test_stats["mae"], test_stats["mse"]
+            "Regression metrics on test split (n={}): mae={:.4f} rmse={:.4f} r2={:.4f}".format(
+                len(dataset_test),
+                test_stats["mae"],
+                test_stats["rmse"],
+                test_stats["r2"],
             )
         )
     else:
@@ -1755,10 +1776,12 @@ def main(args):
             "name",
             "val_loss",
             "val_mae",
-            "val_mse",
+            "val_rmse",
+            "val_r2",
             "test_loss",
             "test_mae",
-            "test_mse",
+            "test_rmse",
+            "test_r2",
         ]
     else:
         header = [
@@ -1788,10 +1811,12 @@ def main(args):
                     row_name,
                     val_stats["loss"],
                     val_stats["mae"],
-                    val_stats["mse"],
+                    val_stats["rmse"],
+                    val_stats["r2"],
                     test_stats["loss"],
                     test_stats["mae"],
-                    test_stats["mse"],
+                    test_stats["rmse"],
+                    test_stats["r2"],
                 ]
             )
         else:
@@ -1892,7 +1917,8 @@ def main(args):
                 y_true = np.asarray(y_true).reshape(-1)
                 y_pred = np.asarray(y_pred).reshape(-1)
                 mae_value = _select_metric("mae", y_true, y_pred)
-                mse_value = _select_metric("mse", y_true, y_pred)
+                rmse_value = _select_metric("rmse", y_true, y_pred)
+                r2_value = _select_metric("r2", y_true, y_pred)
                 predictions = [
                     {
                         "id": sample_id,
@@ -1911,7 +1937,11 @@ def main(args):
                     mae_value,
                     predictions,
                     git_commit,
-                    metrics={"mae": float(mae_value), "mse": float(mse_value)},
+                    metrics={
+                        "mae": float(mae_value),
+                        "rmse": float(rmse_value),
+                        "r2": float(r2_value),
+                    },
                 )
 
 

@@ -4,7 +4,8 @@ from sklearn.metrics import balanced_accuracy_score
 from modules.harmonizer.stage2_finetune.engine_finetune import (
     compute_balanced_accuracy,
     compute_mae,
-    compute_mse,
+    compute_r2,
+    compute_rmse,
 )
 
 
@@ -24,9 +25,19 @@ def test_mae_matches_expected():
     assert actual == expected
 
 
-def test_mse_matches_expected():
+def test_rmse_matches_expected():
     y_true = np.array([1.0, 2.0, 3.0])
     y_pred = np.array([1.5, 2.5, 2.0])
-    expected = np.mean((y_true - y_pred) ** 2)
-    actual = compute_mse(y_true, y_pred)
-    assert actual == expected
+    expected = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    actual = compute_rmse(y_true, y_pred)
+    assert np.isclose(actual, expected)
+
+
+def test_r2_matches_expected():
+    y_true = np.array([1.0, 2.0, 3.0, 4.0])
+    y_pred = np.array([1.0, 2.5, 2.0, 4.0])
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    expected = 1.0 - ss_res / ss_tot
+    actual = compute_r2(y_true, y_pred)
+    assert np.isclose(actual, expected)

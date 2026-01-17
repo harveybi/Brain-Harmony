@@ -38,6 +38,24 @@ def compute_mse(y_true, y_pred):
     return float(np.mean((y_true_np - y_pred_np) ** 2))
 
 
+def compute_rmse(y_true, y_pred):
+    mse = compute_mse(y_true, y_pred)
+    return float(math.sqrt(mse))
+
+
+def compute_r2(y_true, y_pred):
+    y_true_np = np.asarray(y_true, dtype=float)
+    y_pred_np = np.asarray(y_pred, dtype=float)
+    if y_true_np.size == 0 or y_pred_np.size == 0:
+        return 0.0
+    ss_res = float(np.sum((y_true_np - y_pred_np) ** 2))
+    mean_true = float(np.mean(y_true_np))
+    ss_tot = float(np.sum((y_true_np - mean_true) ** 2))
+    if ss_tot == 0.0:
+        return 0.0
+    return 1.0 - ss_res / ss_tot
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -251,13 +269,16 @@ def evaluate(data_loader, model, device, dataset_name, task="classification"):
 
     if task == "regression":
         mae = compute_mae(y_true, y_pred)
-        mse = compute_mse(y_true, y_pred)
+        rmse = compute_rmse(y_true, y_pred)
+        r2 = compute_r2(y_true, y_pred)
         print(
-            f"* MAE {mae:.3f} MSE {mse:.3f} loss {metric_logger.loss.global_avg:.3f}"
+            f"* MAE {mae:.3f} RMSE {rmse:.3f} R2 {r2:.3f} "
+            f"loss {metric_logger.loss.global_avg:.3f}"
         )
         metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
         metrics["mae"] = mae
-        metrics["mse"] = mse
+        metrics["rmse"] = rmse
+        metrics["r2"] = r2
         return metrics
 
     if y_true.size == 0 or y_pred.size == 0:
