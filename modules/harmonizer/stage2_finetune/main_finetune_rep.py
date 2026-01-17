@@ -76,6 +76,12 @@ DATASET_CONFIG = {
         "nb_classes": 5,
         "metric_key": "kappa",
     },
+    "TUAB": {
+        "loader_name": "TUAB",
+        "task": "binary",
+        "nb_classes": 2,
+        "metric_key": "bac",
+    },
     "CamCAN_fMRI_Rest": {
         "loader_name": "CamCAN_fMRI_Rest",
         "task": "regression",
@@ -176,6 +182,23 @@ def resolve_embed_paths(dataset_name, split_seed):
             "results",
             "SEEDV",
             f"seedv_splits_seed{split_seed}.json",
+        )
+        if os.path.isdir(default_root) and os.path.isfile(default_splits):
+            return default_root, default_splits
+    if dataset_upper == "TUAB":
+        default_root = os.path.join(
+            PROJECT_ROOT,
+            "Brain-Harmony",
+            "experiments",
+            "stage0_embed",
+            "downstream_embed",
+            "TUAB",
+        )
+        default_splits = os.path.join(
+            PROJECT_ROOT,
+            "results",
+            "TUAB",
+            f"tuab_splits_seed{split_seed}.json",
         )
         if os.path.isdir(default_root) and os.path.isfile(default_splits):
             return default_root, default_splits

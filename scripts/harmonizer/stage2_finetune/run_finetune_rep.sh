@@ -97,7 +97,7 @@ case $DATASET_NAME in
     "SEEDV")
         NB_CLASSES=5
         ;;
-    "ADNI"|"ADHD200"|"LEMON_fMRI")
+    "ADNI"|"ADHD200"|"LEMON_fMRI"|"TUAB")
         NB_CLASSES=2
         ;;
     *)
