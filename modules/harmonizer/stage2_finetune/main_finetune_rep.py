@@ -1655,24 +1655,6 @@ def main(args):
                 f"Accuracy of the network on the {len(dataset_val)} val images: {test_stats['acc1']:.1f}% {test_stats['f1score']:.1f}% bac={test_stats['bac']:.3f}{val_kappa_msg}"
             )
 
-        test_test_stats = evaluate(
-            data_loader_test, model, device, args.dataset_name, task=dataset_task
-        )
-        if dataset_task == "regression":
-            print(
-                "Regression metrics on test split (n={}): mae={:.4f} mse={:.4f}".format(
-                    len(dataset_test), test_test_stats["mae"], test_test_stats["mse"]
-                )
-            )
-        else:
-            test_kappa = test_test_stats.get("kappa")
-            test_kappa_msg = (
-                f" kappa={test_kappa:.3f}" if test_kappa is not None else ""
-            )
-            print(
-                f"Accuracy of the network on the test dataset {len(dataset_test)} test images: {test_test_stats['acc1']:.1f}% {test_test_stats['f1score']:.1f}% bac={test_test_stats['bac']:.3f}{test_kappa_msg}"
-            )
-
         if args.output_dir:
             is_better = (
                 test_stats[metric_key] <= best_metric
@@ -1714,9 +1696,6 @@ def main(args):
                 log_writer.add_scalar("val/mae", test_stats["mae"], epoch)
                 log_writer.add_scalar("val/mse", test_stats["mse"], epoch)
                 log_writer.add_scalar("val/loss", test_stats["loss"], epoch)
-                log_writer.add_scalar("test/mae", test_test_stats["mae"], epoch)
-                log_writer.add_scalar("test/mse", test_test_stats["mse"], epoch)
-                log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
             else:
                 log_writer.add_scalar("perf/test_acc1", test_stats["acc1"], epoch)
                 log_writer.add_scalar("perf/test_f1score", test_stats["f1score"], epoch)
@@ -1730,12 +1709,6 @@ def main(args):
                 log_writer.add_scalar("val/bac", test_stats["bac"], epoch)
                 if "kappa" in test_stats:
                     log_writer.add_scalar("val/kappa", test_stats["kappa"], epoch)
-                log_writer.add_scalar("test/acc1", test_test_stats["acc1"], epoch)
-                log_writer.add_scalar("test/f1score", test_test_stats["f1score"], epoch)
-                log_writer.add_scalar("test/loss", test_test_stats["loss"], epoch)
-                log_writer.add_scalar("test/bac", test_test_stats["bac"], epoch)
-                if "kappa" in test_test_stats:
-                    log_writer.add_scalar("test/kappa", test_test_stats["kappa"], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
